@@ -31,6 +31,11 @@ For error responses, `success` becomes `false`, `data` is `null`, and `meta` inc
 	- `storeId` string, optional
 	- `searchTerm` string, optional
 
+### Store Filter Behavior
+
+- When `storeId` is provided, products are returned only if they have stock entries in that store with `orderStatus = DELIVERED` and available quantity.
+- `searchTerm` still applies on top of the store filter.
+
 ### Request
 
 No JSON body is required.

@@ -52,7 +52,8 @@ const getProducts = async ({ storeId, searchTerm }: PosProductsQuery = {}) => {
 						quantity: { gt: 0 },
 						stock: {
 							storeId,
-							deletedAt: null
+							deletedAt: null,
+							orderStatus: Prisma.OrderStatus.DELIVERED
 						}
 					}
 				}
