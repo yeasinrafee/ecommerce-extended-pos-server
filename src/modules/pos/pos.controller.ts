@@ -47,8 +47,12 @@ const getBill = async (req: Request, res: Response) => {
 };
 
 const getProducts = async (req: Request, res: Response) => {
+	const storeId = req.query.storeId ? String(req.query.storeId).trim() : undefined;
 	const searchTerm = req.query.searchTerm ? String(req.query.searchTerm).trim() : undefined;
-	const data = await posService.getProducts(searchTerm || undefined);
+	const data = await posService.getProducts({
+		storeId: storeId || undefined,
+		searchTerm: searchTerm || undefined
+	});
 
 	sendResponse({
 		res,

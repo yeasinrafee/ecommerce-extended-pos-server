@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { DiscountType, Prisma } from '@prisma/client';
 import { AppError } from '../../common/errors/app-error.js';
 import { prisma } from '../../config/prisma.js';
-import type { CreatePosBillInput, NormalizedPosBillLine, PosBillsListQuery, PosProductLineInput, UpdatePosBillInput } from './pos.types.js';
+import type { CreatePosBillInput, NormalizedPosBillLine, PosBillsListQuery, PosProductLineInput, PosProductsQuery, UpdatePosBillInput } from './pos.types.js';
 
 const productInclude = {
 	brand: true,
@@ -40,12 +40,28 @@ const transformPosProduct = (product: PosProductRow): PosProductListItem => {
 	};
 };
 
-const getProducts = async (searchTerm?: string) => {
+const getProducts = async ({ storeId, searchTerm }: PosProductsQuery = {}) => {
+	const where: Prisma.ProductWhereInput = {
+		deletedAt: null,
+		...(searchTerm ? { name: { contains: searchTerm, mode: 'insensitive' } } : {}),
+		...(storeId
+			? {
+				stockProducts: {
+					some: {
+						deletedAt: null,
+						quantity: { gt: 0 },
+						stock: {
+							storeId,
+							deletedAt: null
+						}
+					}
+				}
+			}
+			: {})
+	};
+
 	const products = await prisma.product.findMany({
-		where: {
-			deletedAt: null,
-			...(searchTerm ? { name: { contains: searchTerm, mode: 'insensitive' } } : {})
-		},
+		where,
 		orderBy: { createdAt: 'desc' },
 		take: 50,
 		include: productInclude

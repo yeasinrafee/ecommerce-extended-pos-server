@@ -1,4 +1,5 @@
 export type PosProductsQuery = {
+	storeId?: string;
 	searchTerm?: string;
 };
 

@@ -28,6 +28,7 @@ For error responses, `success` becomes `false`, `data` is `null`, and `meta` inc
 - **URL:** `/api/pos/get-products`
 - **Auth:** Public
 - **Query Params:**
+	- `storeId` string, optional
 	- `searchTerm` string, optional
 
 ### Request
@@ -37,7 +38,7 @@ No JSON body is required.
 Example:
 
 ```http
-GET /api/pos/get-products?searchTerm=shirt
+GET /api/pos/get-products?storeId=store_1&searchTerm=shirt
 ```
 
 ### Success Response
