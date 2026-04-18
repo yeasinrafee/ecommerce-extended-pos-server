@@ -1,5 +1,7 @@
 model PosOrder {
     id            String         @id @default(uuid())
+    userId        String
+    user          User           @relation(fields: [userId], references: [id])
     invoiceNumber String         @unique
     baseAmount    Float
     finalAmount   Float

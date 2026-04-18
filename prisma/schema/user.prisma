@@ -18,6 +18,8 @@ model User {
   productReviews ProductReview[]
 
   stocks Stock[]
+
+  posOrders PosOrder[]
 }
 
 model Admin {
