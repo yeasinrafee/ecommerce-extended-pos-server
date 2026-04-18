@@ -1,12 +1,14 @@
 model PosOrder {
-    id             String         @id @default(uuid())
-    invoiceNumber  String         @unique
-    baseAmount     Float
-    finalAmount    Float
-    createdAt      DateTime       @default(now())
-    updatedAt      DateTime       @updatedAt
-    deletedAt      DateTime?
-    posOrderItems  PosOrderItem[]
+    id            String         @id @default(uuid())
+    invoiceNumber String         @unique
+    baseAmount    Float
+    finalAmount   Float
+    createdAt     DateTime       @default(now())
+    updatedAt     DateTime       @updatedAt
+    deletedAt     DateTime?
+    storeId       String?
+    store         Store?         @relation(fields: [storeId], references: [id])
+    posOrderItems PosOrderItem[]
 }
 
 model PosOrderItem {
@@ -22,6 +24,7 @@ model PosOrderItem {
     discountValue Float?
     createdAt     DateTime      @default(now())
     updatedAt     DateTime      @updatedAt
+    deletedAt     DateTime?
 
     variations PosOrderItemVariation[]
 
@@ -35,6 +38,9 @@ model PosOrderItemVariation {
     orderItemId        String
     productVariation   ProductVariation @relation(fields: [productVariationId], references: [id])
     productVariationId String
+    createdAt          DateTime         @default(now())
+    updatedAt          DateTime         @updatedAt
+    deletedAt          DateTime?
 
     @@unique([orderItemId, productVariationId])
 }
