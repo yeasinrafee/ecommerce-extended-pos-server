@@ -114,7 +114,152 @@ Status: `200`
 
 ---
 
-## 2. Create POS Bill
+## 2. Get All Bills (Paginated)
+
+- **Method:** `GET`
+- **URL:** `/api/pos/bill/get-all-paginated`
+- **Auth:** Required
+- **Auth Source:** HTTP-only `accessToken` cookie
+- **Query Params:**
+	- `page` number, optional (default `1`)
+	- `limit` number, optional (default `10`)
+
+### Purpose
+
+Returns paginated bill summaries only (processed data), not full bill details.
+
+### Success Response
+
+Status: `200`
+
+```json
+{
+	"success": true,
+	"message": "POS bills fetched",
+	"data": [
+		{
+			"id": "pos_order_1",
+			"invoiceNumber": "000123456789",
+			"totalQuantity": 8,
+			"totalAmount": 148,
+			"createdAt": "2026-04-18T10:20:00.000Z",
+			"processedBy": {
+				"userId": "user_1",
+				"adminName": "Cashier One"
+			}
+		}
+	],
+	"errors": [],
+	"meta": {
+		"page": 1,
+		"limit": 10,
+		"total": 24,
+		"totalPages": 3
+	}
+}
+```
+
+### Field Notes
+
+- `totalAmount` is derived from `PosOrder.finalAmount`.
+- `totalQuantity` is the sum of active (`deletedAt: null`) order item quantities.
+- `processedBy.userId` comes from `PosOrder.userId`.
+- `processedBy.adminName` comes from the related admin profile (`User -> Admin`) and can be `null`.
+
+---
+
+## 3. Get One Bill
+
+- **Method:** `GET`
+- **URL:** `/api/pos/bill/:orderId`
+- **Auth:** Required
+- **Auth Source:** HTTP-only `accessToken` cookie
+
+### Purpose
+
+Fetch one printable POS bill record. This returns the full processed bill shape used for printing, matching the structure returned by `createBill`.
+
+### Request
+
+Path param:
+
+- `orderId` (required): POS order id
+
+No request body required.
+
+### Success Response
+
+Status: `200`
+
+```json
+{
+	"success": true,
+	"message": "POS bill fetched",
+	"data": {
+		"id": "pos_order_1",
+		"invoiceNumber": "000123456789",
+		"storeId": "store_1",
+		"store": {
+			"id": "store_1",
+			"name": "Main Store",
+			"address": "123 Market Street",
+			"status": "ACTIVE",
+			"createdAt": "2026-01-01T00:00:00.000Z",
+			"updatedAt": "2026-04-18T10:20:00.000Z",
+			"deletedAt": null
+		},
+		"cashier": {
+			"id": "user_1",
+			"email": "cashier@example.com",
+			"name": "Cashier One"
+		},
+		"baseAmount": 40,
+		"finalAmount": 37,
+		"createdAt": "2026-04-18T10:20:00.000Z",
+		"updatedAt": "2026-04-18T10:20:00.000Z",
+		"items": [
+			{
+				"id": "pos_item_1",
+				"productId": "prod_1",
+				"productName": "Classic T-Shirt",
+				"productImage": "https://cdn.example.com/products/tshirt.jpg",
+				"productSku": "TSHIRT-001",
+				"quantity": 2,
+				"unitBasePrice": 20,
+				"unitFinalPrice": 18.5,
+				"lineBaseTotal": 40,
+				"lineFinalTotal": 37,
+				"discountType": "PERCENTAGE_DISCOUNT",
+				"discountValue": 7.5,
+				"variations": [
+					{
+						"id": "var_1",
+						"attributeId": "attr_1",
+						"attributeName": "Size",
+						"attributeValue": "M"
+					}
+				]
+			}
+		],
+		"summary": {
+			"totalItems": 1,
+			"totalQuantity": 2
+		}
+	},
+	"errors": [],
+	"meta": {}
+}
+```
+
+### Notes
+
+- This endpoint is intended for receipt printing / bill preview.
+- The response shape matches the one returned after creating a bill.
+- Access can be restricted to the bill owner by the service layer.
+
+---
+
+## 4. Create POS Bill
 
 - **Method:** `POST`
 - **URL:** `/api/pos/bill/create`
@@ -353,7 +498,7 @@ Status: `400`
 
 ---
 
-## 3. Update POS Bill
+## 5. Update POS Bill
 
 - **Method:** `PATCH`
 - **URL:** `/api/pos/bill/:orderId/update`
@@ -481,7 +626,7 @@ Status: `200`
 
 ---
 
-## 4. Delete POS Bill (Soft Delete)
+## 6. Delete POS Bill (Soft Delete)
 
 - **Method:** `DELETE`
 - **URL:** `/api/pos/bill/:orderId/delete`

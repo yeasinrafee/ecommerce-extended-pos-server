@@ -2,6 +2,11 @@ export type PosProductsQuery = {
 	searchTerm?: string;
 };
 
+export type PosBillsListQuery = {
+	page?: number;
+	limit?: number;
+};
+
 export type PosVariationLineInput = {
 	variationId?: string;
 	quantity?: number;

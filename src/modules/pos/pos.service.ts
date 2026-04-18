@@ -2,7 +2,7 @@ import crypto from 'node:crypto';
 import { DiscountType, Prisma } from '@prisma/client';
 import { AppError } from '../../common/errors/app-error.js';
 import { prisma } from '../../config/prisma.js';
-import type { CreatePosBillInput, NormalizedPosBillLine, PosProductLineInput, UpdatePosBillInput } from './pos.types.js';
+import type { CreatePosBillInput, NormalizedPosBillLine, PosBillsListQuery, PosProductLineInput, UpdatePosBillInput } from './pos.types.js';
 
 const productInclude = {
 	brand: true,
@@ -52,6 +52,90 @@ const getProducts = async (searchTerm?: string) => {
 	});
 
 	return products.map(transformPosProduct);
+};
+
+const getBills = async ({ page = 1, limit = 10 }: PosBillsListQuery = {}) => {
+	const skip = (page - 1) * limit;
+	const where: Prisma.PosOrderWhereInput = {
+		deletedAt: null
+	};
+
+	const [orders, total] = await Promise.all([
+		prisma.posOrder.findMany({
+			where,
+			skip,
+			take: limit,
+			orderBy: { createdAt: 'desc' },
+			select: {
+				id: true,
+				invoiceNumber: true,
+				finalAmount: true,
+				createdAt: true,
+				user: {
+					select: {
+						id: true,
+						email: true,
+						admins: {
+							select: { name: true },
+							take: 1
+						}
+					}
+				},
+				posOrderItems: {
+					where: { deletedAt: null },
+					select: {
+						quantity: true
+					}
+				}
+			}
+		}),
+		prisma.posOrder.count({ where })
+	]);
+
+	return {
+		data: orders.map((order) => ({
+			id: order.id,
+			invoiceNumber: order.invoiceNumber,
+			totalQuantity: order.posOrderItems.reduce((sum, item) => sum + item.quantity, 0),
+			totalAmount: order.finalAmount,
+			createdAt: order.createdAt,
+			processedBy: {
+				userId: order.user.id,
+				adminName: order.user.admins[0]?.name ?? null
+			}
+		})),
+		meta: {
+			page,
+			limit,
+			total,
+			totalPages: Math.max(1, Math.ceil(total / limit))
+		}
+	};
+};
+
+const getBill = async (orderId: string, userId?: string) => {
+	return prisma.$transaction(async (tx) => {
+		const order = await tx.posOrder.findFirst({
+			where: {
+				id: orderId,
+				deletedAt: null
+			}
+		});
+
+		if (!order) {
+			throw new AppError(404, 'POS order not found', [
+				{ field: 'orderId', message: 'No active POS order found with this id', code: 'POS_ORDER_NOT_FOUND' }
+			]);
+		}
+
+		if (userId && order.userId !== userId) {
+			throw new AppError(403, 'Access denied', [
+				{ field: 'orderId', message: 'You are not allowed to view this bill', code: 'BILL_VIEW_FORBIDDEN' }
+			]);
+		}
+
+		return loadPosOrderResponse(tx, order.id);
+	});
 };
 
 const toTrimmedString = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
@@ -414,7 +498,7 @@ const incrementStoreStockProducts = async (
 	});
 };
 
-const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: string, userId: string) => {
+const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: string, userId?: string) => {
 	const createdOrder = await tx.posOrder.findUnique({
 		where: { id: orderId },
 		include: {
@@ -458,7 +542,7 @@ const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: strin
 	}
 
 	const cashierUser = await tx.user.findUnique({
-		where: { id: userId },
+		where: { id: userId ?? createdOrder.userId },
 		select: {
 			id: true,
 			email: true,
@@ -1218,6 +1302,8 @@ const deleteBill = async (orderId: string, userId: string) => {
 };
 
 export const posService = {
+	getBills,
+	getBill,
 	getProducts,
 	createBill,
 	updateBill,
