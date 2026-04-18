@@ -1,0 +1,34 @@
+model Blog {
+    id               String  @id @default(uuid())
+    title            String  @unique
+    userId           String
+    user             User    @relation(fields: [userId], references: [id])
+    image            String?
+    authorName       String
+    shortDescription String
+    content          String
+    slug             String  @unique
+
+    comments  Comment[]
+    createdAt DateTime  @default(now())
+    updatedAt DateTime  @updatedAt
+
+    seos       Seo[]
+    tags       TagsOnBlogs[]
+    categoryId String?
+    category   BlogCategory? @relation(fields: [categoryId], references: [id])
+}
+
+model Comment {
+    id        String    @id @default(uuid())
+    parentId  String?
+    parent    Comment?  @relation("CommentReplies", fields: [parentId], references: [id])
+    replies   Comment[] @relation("CommentReplies")
+    content   String
+    userId    String
+    user      User      @relation(fields: [userId], references: [id])
+    blogId    String
+    blog      Blog      @relation(fields: [blogId], references: [id])
+    createdAt DateTime  @default(now())
+    updatedAt DateTime  @updatedAt
+}

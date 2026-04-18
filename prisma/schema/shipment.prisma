@@ -1,0 +1,64 @@
+
+enum CourierProvider {
+  STEADFAST
+  PATHAO
+  REDX
+  PAPERFLY
+  ECOURIER
+  SUNDARBAN
+}
+
+enum ShipmentStatus {
+  INITIATED
+  CONSIGNMENT_CREATED
+  PICKED_UP
+  IN_TRANSIT
+  AT_HUB
+  OUT_FOR_DELIVERY
+  DELIVERED
+  FAILED_DELIVERY
+  RETURNED
+  CANCELLED
+}
+
+model Shipment {
+  id         String          @id @default(uuid())
+
+  order      Order           @relation(fields: [orderId], references: [id])
+  orderId    String          @unique
+
+  courier    CourierProvider
+  trackingId String?
+
+  codAmount  Float           @default(0)
+  status     ShipmentStatus  @default(INITIATED)
+
+  isRemitted       Boolean   @default(false)
+  remittedAt       DateTime?
+  remittanceAmount Float?
+
+  note       String?
+
+  createdAt  DateTime        @default(now())
+  updatedAt  DateTime        @updatedAt
+
+  statusLogs ShipmentStatusLog[]
+
+  @@index([orderId])
+  @@index([trackingId])
+}
+
+model ShipmentStatusLog {
+  id         String         @id @default(uuid())
+
+  shipment   Shipment       @relation(fields: [shipmentId], references: [id])
+  shipmentId String
+
+  status     ShipmentStatus
+  message    String?
+  rawPayload Json?
+  occurredAt DateTime       @default(now())
+  createdAt  DateTime       @default(now())
+
+  @@index([shipmentId])
+}

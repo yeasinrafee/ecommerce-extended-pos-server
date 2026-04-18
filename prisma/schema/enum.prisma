@@ -1,0 +1,31 @@
+enum DiscountType {
+  PERCENTAGE_DISCOUNT
+  FLAT_DISCOUNT
+  NONE
+}
+
+enum StockStatus {
+  IN_STOCK
+  LOW_STOCK
+  OUT_OF_STOCK
+}
+
+enum Role {
+  ADMIN
+  SUPER_ADMIN
+  CUSTOMER
+}
+
+enum Status {
+  ACTIVE
+  INACTIVE
+}
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  SHIPPED
+  DELIVERED
+  CANCELLED
+}
+

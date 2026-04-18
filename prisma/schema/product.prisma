@@ -1,0 +1,104 @@
+model Product {
+  id                String        @id @default(cuid())
+  name              String
+  slug              String        @unique
+  shortDescription  String?
+  description       String?
+  Baseprice         Float
+  finalPrice        Float
+  discountType      DiscountType?
+  discountValue     Float?
+  stock             Int
+  avgRating         Float         @default(0)
+  totalRatings      Int           @default(0)
+  totalReviews      Int           @default(0)
+  weight            Float?
+  length            Float?
+  width             Float?
+  height            Float?
+  volume            Float?
+  sku               String?       
+  discountStartDate DateTime?
+  discountEndDate   DateTime?
+  brandId           String?
+  brand             Brand?        @relation(fields: [brandId], references: [id])
+  image             String?
+  galleryImages     String[]      @default([])
+  status            Status        @default(ACTIVE)
+  stockStatus       StockStatus   @default(IN_STOCK)
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  deletedAt         DateTime?
+
+  categories             CategoriesOnProducts[]
+  tags                   TagsOnProducts[]
+  additionalInformations AdditionalInformation[]
+  seos                   Seo[]
+  productVariations      ProductVariation[]
+  productReviews         ProductReview[]
+
+  wishlistItems WishlistItem[]
+
+  orderItems OrderItem[]
+
+  stockProducts StockProduct[]
+  stockProductTransfers StockProductTransfer[]
+
+  offerProducts OfferProduct[]
+}
+
+model ProductReview {
+  id        String          @id @default(uuid())
+  parentId  String?
+  parent    ProductReview?  @relation("ProductReviewReplies", fields: [parentId], references: [id])
+  replies   ProductReview[] @relation("ProductReviewReplies")
+  content   String
+  userId    String
+  user      User            @relation(fields: [userId], references: [id])
+  productId String
+  product   Product         @relation(fields: [productId], references: [id])
+  rating    Int?
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+}
+
+model Brand {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  slug      String   @unique
+  image     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  products Product[]
+}
+
+model AdditionalInformation {
+  id        String   @id @default(uuid())
+  product   Product  @relation(fields: [productId], references: [id])
+  productId String
+  name      String
+  value     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model ProductVariation {
+  id             String    @id @default(uuid())
+  product        Product   @relation(fields: [productId], references: [id])
+  productId      String
+  attribute      Attribute @relation(fields: [attributeId], references: [id])
+  attributeId    String
+  attributeValue String
+  basePrice      Float
+  finalPrice     Float
+  galleryImage   String?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  orderItems OrderItemVariation[]
+
+  @@unique([productId, attributeId, attributeValue])
+  wishlistItemVariations WishlistItemVariation[]
+}

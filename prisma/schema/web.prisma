@@ -1,0 +1,60 @@
+model CompanyInformation {
+    id               String   @id @default(uuid())
+    logo             String?
+    footerLogo       String?
+    email            String?
+    address          String?
+    phone            String?
+    shortDescription String?
+    workingHours     String?
+    createdAt        DateTime @default(now())
+    updatedAt        DateTime @updatedAt
+}
+
+model CompanyPolicy {
+    id                 String   @id @default(uuid())
+    termsOfService     String?
+    termsAndConditions String?
+    privacyPolicy      String?
+    refundPolicy       String?
+    shippingPolicy     String?
+    sizeChart          String?
+    createdAt          DateTime @default(now())
+    updatedAt          DateTime @updatedAt
+}
+
+model Faq {
+    id        String   @id @default(uuid())
+    question  String
+    answer    String
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+}
+
+model SocialMediaLink {
+    id        String   @id @default(uuid())
+    name      String
+    link      String
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+}
+
+model Testimonial {
+    id          String   @id @default(uuid())
+    name        String
+    designation String
+    rating      Int
+    image       String?
+    comment     String
+    createdAt   DateTime @default(now())
+    updatedAt   DateTime @updatedAt
+}
+
+model Slider {
+    id        String   @id @default(uuid())
+    image     String
+    link      String?
+    serial    Int      @unique
+    createdAt DateTime @default(now())
+    updatedAt DateTime @updatedAt
+}

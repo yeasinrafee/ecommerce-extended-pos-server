@@ -1,0 +1,83 @@
+model Stock {
+	id                   String         @id @default(uuid())
+	userId               String
+	user                 User           @relation(fields: [userId], references: [id])
+	storeId              String
+	store                Store          @relation(fields: [storeId], references: [id])
+	supplierId           Int
+	supplier             Supplier       @relation(fields: [supplierId], references: [id])
+	invoiceNumber        String         @unique
+	note                 String?
+	totalProductQuantity Int            @default(0)
+	grandTotal           Float          @default(0)
+	orderStatus          OrderStatus    @default(PENDING)
+	createdAt            DateTime       @default(now())
+	updatedAt            DateTime       @updatedAt
+	deletedAt            DateTime?
+
+	stockProducts StockProduct[]
+
+	@@index([storeId])
+	@@index([supplierId])
+	@@index([userId])
+	@@index([createdAt])
+}
+
+model StockProduct {
+	id          String   @id @default(uuid())
+	stockId     String
+	stock       Stock    @relation(fields: [stockId], references: [id])
+	productId   String
+	product     Product  @relation(fields: [productId], references: [id])
+	quantity    Int
+	purchasePrice Float
+	totalPrice  Float
+	createdAt   DateTime @default(now())
+	updatedAt   DateTime @updatedAt
+	deletedAt   DateTime?
+
+	@@index([stockId])
+	@@index([productId])
+	@@index([createdAt])
+}
+
+model StockTransfer {
+	id            String                @id @default(uuid())
+	invoiceNumber String                @unique
+	fromStoreId   String
+	fromStore     Store                 @relation("StockTransferFrom", fields: [fromStoreId], references: [id])
+	toStoreId     String
+	toStore       Store                 @relation("StockTransferTo", fields: [toStoreId], references: [id])
+	orderStatus   OrderStatus   @default(PENDING)
+	note		  String?
+	quantity      Int
+	createdAt     DateTime              @default(now())
+	updatedAt     DateTime              @updatedAt
+	deletedAt     DateTime?
+
+	stockProductTransfers StockProductTransfer[]
+
+	@@index([fromStoreId])
+	@@index([toStoreId])
+	@@index([createdAt])
+}
+
+model StockProductTransfer {
+	id              String        @id @default(uuid())
+	stockTransferId String
+	stockTransfer   StockTransfer @relation(fields: [stockTransferId], references: [id])
+	productId       String
+	product         Product       @relation(fields: [productId], references: [id])
+	quantity        Int
+	purchasePrice   Float
+	totalPrice      Float
+	createdAt       DateTime      @default(now())
+	updatedAt       DateTime      @updatedAt
+	deletedAt       DateTime?
+
+	@@index([stockTransferId])
+	@@index([productId])
+	@@index([createdAt])
+}
+
+

@@ -1,0 +1,12 @@
+model Seo {
+  id          String   @id @default(uuid())
+  product     Product? @relation(fields: [productId], references: [id])
+  productId   String?
+  blog        Blog?    @relation(fields: [blogId], references: [id])
+  blogId      String?
+  title       String
+  description String?
+  keyword     String[]
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+}

@@ -1,0 +1,44 @@
+model User {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  password  String
+  role      Role
+  verified  Boolean  @default(false)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  admins Admin[]
+  blogs  Blog[]
+
+  comments Comment[]
+
+  customers Customer[]
+  otps      OTP[]
+
+  productReviews ProductReview[]
+
+  stocks Stock[]
+}
+
+model Admin {
+  id        String   @id @default(uuid())
+  user      User     @relation(fields: [userId], references: [id])
+  userId    String   @unique
+  name      String
+  image     String?
+  status    Status   @default(ACTIVE)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  adminNotifications AdminNotification[]
+}
+
+model OTP {
+  id         String   @id @default(uuid())
+  user       User     @relation(fields: [userId], references: [id])
+  userId     String
+  code       String
+  expiryDate DateTime
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+}

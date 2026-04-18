@@ -1,0 +1,10 @@
+model Attribute {
+  id        String   @id @default(uuid())
+  name      String   @unique
+  slug      String   @unique
+  values    String[]
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  productVariations ProductVariation[]
+}

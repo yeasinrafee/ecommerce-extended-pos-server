@@ -1,0 +1,33 @@
+model Wishlist {
+    id         String         @id @default(uuid())
+    customer   Customer       @relation(fields: [customerId], references: [id])
+    customerId String         @unique
+    items      WishlistItem[]
+    createdAt  DateTime       @default(now())
+    updatedAt  DateTime       @updatedAt
+}
+
+model WishlistItem {
+    id          String   @id @default(uuid())
+    wishlist    Wishlist @relation(fields: [wishlistId], references: [id])
+    wishlistId  String
+    addedToCart Boolean  @default(false)
+    product     Product  @relation(fields: [productId], references: [id])
+    productId   String
+    createdAt   DateTime @default(now())
+    updatedAt   DateTime @updatedAt
+
+    variations WishlistItemVariation[]
+
+    @@unique([wishlistId, productId])
+}
+
+model WishlistItemVariation {
+    id                 String           @id @default(uuid())
+    wishlistItem       WishlistItem     @relation(fields: [wishlistItemId], references: [id])
+    wishlistItemId     String
+    productVariation   ProductVariation @relation(fields: [productVariationId], references: [id])
+    productVariationId String
+
+    @@unique([wishlistItemId, productVariationId])
+}

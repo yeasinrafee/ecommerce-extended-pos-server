@@ -1,0 +1,16 @@
+model Shipping {
+    id                        String   @id @default(uuid())
+    minimumFreeShippingAmount Float
+    tax                       Float
+    maximumWeight             Float?
+    maximumVolume             Float?
+    length                    Float?
+    width                     Float?
+    height                    Float?
+    chargePerWeight           Float?
+    chargePerVolume           Float?
+    weightUnit                Float?
+    volumeUnit                Float?
+    createdAt                 DateTime @default(now())
+    updatedAt                 DateTime @updatedAt
+}

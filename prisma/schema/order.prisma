@@ -1,0 +1,79 @@
+model Order {
+    id String @id @default(uuid())
+
+    customer      Customer @relation(fields: [customerId], references: [id])
+    customerId    String
+    customerName  String
+    customerEmail String?
+    customerPhone String?
+
+    address   Address @relation(fields: [addressId], references: [id])
+    addressId String
+
+    baseAmount Float
+
+    promo   Promo?  @relation(fields: [promoId], references: [id])
+    promoId String?
+
+    discountType   DiscountType
+    discountValue  Float
+    discountAmount Float        @default(0)
+    finalAmount    Float
+
+    baseShippingCharge  Float       @default(0)
+    extraShippingCharge Float       @default(0)
+    finalShippingCharge Float       @default(0)
+    orderStatus         OrderStatus @default(PENDING)
+
+    tax Float @default(0)
+
+    totalWeight Float? @default(0)
+    totalVolume Float? @default(0)
+
+    chargePerWeight Float?
+    chargePerVolume Float?
+    weightUnit      Float?
+    volumeUnit      Float?
+
+    deliveryTime Float?
+    expectedDeliveryDate DateTime?
+
+    createdAt  DateTime    @default(now())
+    updatedAt  DateTime    @updatedAt
+    orderItems OrderItem[]
+
+    @@index([customerId])
+    @@index([addressId])
+    @@index([promoId])
+    shipments Shipment[]
+}
+
+model OrderItem {
+    id            String        @id @default(uuid())
+    orderId       String
+    order         Order         @relation(fields: [orderId], references: [id])
+    productId     String
+    product       Product       @relation(fields: [productId], references: [id])
+    quantity      Int
+    Baseprice     Float
+    finalPrice    Float
+    discountType  DiscountType?
+    discountValue Float?
+    createdAt     DateTime      @default(now())
+    updatedAt     DateTime      @updatedAt
+
+    variations OrderItemVariation[]
+
+    @@index([orderId])
+    @@index([productId])
+}
+
+model OrderItemVariation {
+    id                 String           @id @default(uuid())
+    orderItem          OrderItem        @relation(fields: [orderItemId], references: [id])
+    orderItemId        String
+    productVariation   ProductVariation @relation(fields: [productVariationId], references: [id])
+    productVariationId String
+
+    @@unique([orderItemId, productVariationId])
+}

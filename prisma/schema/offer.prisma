@@ -1,0 +1,26 @@
+model Offer {
+  id               String          @id @default(uuid())
+  discountType     DiscountType?
+  status           Status     @default(ACTIVE)
+  discountValue    Float?
+  discountStartDate DateTime?
+  discountEndDate   DateTime?
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  deletedAt        DateTime?
+
+  offerProducts    OfferProduct[]
+}
+
+model OfferProduct {
+  id         String   @id @default(uuid())
+  product    Product  @relation(fields: [productId], references: [id])
+  productId  String
+  offer      Offer    @relation(fields: [offerId], references: [id])
+  offerId    String
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+  deletedAt  DateTime?
+
+  @@unique([productId, offerId])
+}

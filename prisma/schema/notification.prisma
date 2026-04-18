@@ -1,0 +1,27 @@
+
+model Notification {
+	id        String  @id @default(uuid())
+	title     String
+	message   String?
+	createdAt DateTime @default(now())
+	updatedAt DateTime @updatedAt
+
+	adminNotifications AdminNotification[]
+}
+
+model AdminNotification {
+	id             String       @id @default(uuid())
+	admin          Admin        @relation(fields: [adminId], references: [id])
+	adminId        String
+	notification   Notification @relation(fields: [notificationId], references: [id])
+	notificationId String
+
+	seen    Boolean  @default(false)
+	seenAt  DateTime?
+
+	createdAt DateTime @default(now())
+	updatedAt DateTime @updatedAt
+    
+    @@unique([adminId, notificationId])
+}
+

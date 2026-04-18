@@ -1,0 +1,13 @@
+model Promo {
+id            String       @id @default(uuid())
+code          String       @unique
+discountType  DiscountType
+discountValue Float
+numberOfUses  Int
+startDate     DateTime
+endDate       DateTime
+createdAt     DateTime     @default(now())
+updatedAt     DateTime     @updatedAt
+
+orders Order[]
+}
