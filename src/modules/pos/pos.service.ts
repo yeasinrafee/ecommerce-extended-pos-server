@@ -11,8 +11,37 @@ const productInclude = {
 	productVariations: { where: { deletedAt: null }, include: { attribute: true } },
 } as const;
 
+type PosProductRow = Prisma.ProductGetPayload<{ include: typeof productInclude }>;
+
+type PosProductListItem = Omit<PosProductRow, 'brand' | 'categories' | 'tags' | 'productVariations'> & {
+	brand: string | null;
+	categories: string[];
+	tags: string[];
+	productVariations: Array<{
+		id: string;
+		attributeValue: string;
+		basePrice: number;
+		finalPrice: number;
+	}>;
+};
+
+const transformPosProduct = (product: PosProductRow): PosProductListItem => {
+	return {
+		...product,
+		brand: product.brand?.name ?? null,
+		categories: product.categories.map((item) => item.category.name),
+		tags: product.tags.map((item) => item.tag.name),
+		productVariations: product.productVariations.map((variation) => ({
+			id: variation.id,
+			attributeValue: variation.attributeValue,
+			basePrice: variation.basePrice,
+			finalPrice: variation.finalPrice
+		}))
+	};
+};
+
 const getProducts = async (searchTerm?: string) => {
-	return prisma.product.findMany({
+	const products = await prisma.product.findMany({
 		where: {
 			deletedAt: null,
 			...(searchTerm ? { name: { contains: searchTerm, mode: 'insensitive' } } : {})
@@ -21,6 +50,8 @@ const getProducts = async (searchTerm?: string) => {
 		take: 50,
 		include: productInclude
 	});
+
+	return products.map(transformPosProduct);
 };
 
 const toTrimmedString = (value: unknown) => (typeof value === 'string' ? value.trim() : '');
@@ -104,6 +135,12 @@ const normalizeProductLine = (line: PosProductLineInput, fallbackQty: number | n
 			? line.variationQuantities.map((q) => toPositiveInt(q))
 			: [];
 
+		if (variationQuantities.length !== variationIds.length) {
+			throw new AppError(400, 'Invalid variation payload', [
+				{ field: 'products.variationQuantities', message: 'Variation quantities must be provided for each variationId', code: 'INVALID_VARIATION_QUANTITY' }
+			]);
+		}
+
 		if (variationQuantities.length === variationIds.length) {
 			return variationIds.map((variationId, index) => {
 				const quantity = variationQuantities[index];
@@ -172,6 +209,10 @@ const normalizeCreatePosBillPayload = (payload: CreatePosBillInput) => {
 				}
 				return { productId: productIds[0], quantity, variationIds: [variationId] };
 			});
+		} else if (productIds.length === 1 && variationIds.length > 0) {
+			throw new AppError(400, 'Invalid variation payload', [
+				{ field: 'variationQuantities', message: 'Variation quantities must be provided for each variationId', code: 'INVALID_VARIATION_QUANTITY' }
+			]);
 		} else {
 			lines = productIds.map((productId, index) => {
 				const quantity = quantities[index] ?? toPositiveInt(payload.quantity) ?? 1;
