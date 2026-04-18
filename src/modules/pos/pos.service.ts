@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { DiscountType, Prisma } from '@prisma/client';
+import { DiscountType, OrderStatus, Prisma } from '@prisma/client';
 import { AppError } from '../../common/errors/app-error.js';
 import { prisma } from '../../config/prisma.js';
 import type { CreatePosBillInput, NormalizedPosBillLine, PosBillsListQuery, PosProductLineInput, PosProductsQuery, UpdatePosBillInput } from './pos.types.js';
@@ -53,7 +53,7 @@ const getProducts = async ({ storeId, searchTerm }: PosProductsQuery = {}) => {
 						stock: {
 							storeId,
 							deletedAt: null,
-							orderStatus: Prisma.OrderStatus.DELIVERED
+							orderStatus: OrderStatus.DELIVERED
 						}
 					}
 				}
