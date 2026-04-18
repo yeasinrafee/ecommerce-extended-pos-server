@@ -46,6 +46,8 @@ model Product {
   stockProductTransfers StockProductTransfer[]
 
   offerProducts OfferProduct[]
+
+  posOrderItems PosOrderItem[]
 }
 
 model ProductReview {
@@ -102,4 +104,5 @@ model ProductVariation {
   wishlistItemVariations WishlistItemVariation[]
 
   @@unique([productId, attributeId, attributeValue])
+  posOrderItemVariations PosOrderItemVariation[]
 }

@@ -1,0 +1,40 @@
+model PosOrder {
+    id             String         @id @default(uuid())
+    invoiceNumber  String         @unique
+    baseAmount     Float
+    finalAmount    Float
+    createdAt      DateTime       @default(now())
+    updatedAt      DateTime       @updatedAt
+    deletedAt      DateTime?
+    posOrderItems  PosOrderItem[]
+}
+
+model PosOrderItem {
+    id            String        @id @default(uuid())
+    posOrderId    String
+    posOrder      PosOrder      @relation(fields: [posOrderId], references: [id])
+    productId     String
+    product       Product       @relation(fields: [productId], references: [id])
+    quantity      Int
+    Baseprice     Float
+    finalPrice    Float
+    discountType  DiscountType?
+    discountValue Float?
+    createdAt     DateTime      @default(now())
+    updatedAt     DateTime      @updatedAt
+
+    variations PosOrderItemVariation[]
+
+    @@index([posOrderId])
+    @@index([productId])
+}
+
+model PosOrderItemVariation {
+    id                 String           @id @default(uuid())
+    orderItem          PosOrderItem     @relation(fields: [orderItemId], references: [id])
+    orderItemId        String
+    productVariation   ProductVariation @relation(fields: [productVariationId], references: [id])
+    productVariationId String
+
+    @@unique([orderItemId, productVariationId])
+}
