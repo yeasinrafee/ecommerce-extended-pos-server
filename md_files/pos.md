@@ -199,7 +199,7 @@ In this example:
 
 ### Request Field Rules
 
-- `storeId` is required.
+- `storeId` is optional.
 - One of these must be provided:
 	- `products`
 	- `productIds`
@@ -209,6 +209,7 @@ In this example:
 - If a line includes `variationIds`, it must also include `variationQuantities` with the same number of entries.
 - `variationQuantities` must match the number of `variationIds` when used as a per-variation payload.
 - If no variation is provided for a line, use only `quantity` for that product line.
+- If `storeId` is omitted, the bill is still created, but store-level stock validation and store stock decrement are skipped.
 
 ### Success Response
 
@@ -304,13 +305,13 @@ Status: `400`
 ```json
 {
 	"success": false,
-	"message": "Invalid store id",
+	"message": "Store not found",
 	"data": null,
 	"errors": [
 		{
 			"field": "storeId",
-			"message": "storeId is required",
-			"code": "INVALID_STORE_ID"
+			"message": "No active store found with this id",
+			"code": "STORE_NOT_FOUND"
 		}
 	],
 	"meta": {
@@ -347,3 +348,187 @@ Status: `400`
 - Product and store stock are checked before the bill is created.
 - Product variation pricing is used when variations are provided.
 - The returned cashier name is pulled from the authenticated user's admin profile when available.
+- `cashier.id` and `cashier.email` come from the authenticated `User` record.
+- `cashier.name` comes from the related `Admin` record (`admins[0].name`) and can be `null` when no admin profile exists.
+
+---
+
+## 3. Update POS Bill
+
+- **Method:** `PATCH`
+- **URL:** `/api/pos/bill/:orderId/update`
+- **Auth:** Required
+- **Auth Source:** HTTP-only `accessToken` cookie
+
+### Purpose
+
+Use this endpoint to update an existing POS bill by replacing product lines. It supports:
+
+- adding new products
+- removing existing products
+- changing quantities
+- changing selected variations
+
+### Request
+
+Path param:
+
+- `orderId` (required): POS order id to update
+
+Body format is the same as create bill formats (`products`, `productIds`, or single product fields).
+
+Example:
+
+```json
+{
+	"storeId": "store_1",
+	"products": [
+		{
+			"productId": "prod_1",
+			"variationIds": ["var_1", "var_2"],
+			"variationQuantities": [3, 5]
+		},
+		{
+			"productId": "prod_2",
+			"quantity": 2
+		}
+	]
+}
+```
+
+### Update Safety Guarantees
+
+The update runs in a single DB transaction and does all of the following safely:
+
+- restores previously decremented product stock from old bill items
+- restores previously decremented store stock (when original bill had a store)
+- validates and applies new requested items/variations
+- decrements product stock again based on updated items
+- decrements store stock again (when updated bill has a store)
+- deletes old order items/variations and inserts the updated items
+- recalculates and persists `baseAmount` and `finalAmount`
+
+### Success Response
+
+Status: `200`
+
+```json
+{
+	"success": true,
+	"message": "POS bill updated",
+	"data": {
+		"id": "pos_order_1",
+		"invoiceNumber": "000123456789",
+		"storeId": "store_1",
+		"store": {
+			"id": "store_1",
+			"name": "Main Store",
+			"address": "123 Market Street",
+			"status": "ACTIVE",
+			"createdAt": "2026-01-01T00:00:00.000Z",
+			"updatedAt": "2026-04-18T10:20:00.000Z",
+			"deletedAt": null
+		},
+		"cashier": {
+			"id": "user_1",
+			"email": "cashier@example.com",
+			"name": "Cashier One"
+		},
+		"baseAmount": 160,
+		"finalAmount": 148,
+		"createdAt": "2026-04-18T10:20:00.000Z",
+		"updatedAt": "2026-04-18T10:40:00.000Z",
+		"items": [
+			{
+				"id": "pos_item_2",
+				"productId": "prod_1",
+				"productName": "Classic T-Shirt",
+				"productImage": "https://cdn.example.com/products/tshirt.jpg",
+				"productSku": "TSHIRT-001",
+				"quantity": 8,
+				"unitBasePrice": 20,
+				"unitFinalPrice": 18.5,
+				"lineBaseTotal": 160,
+				"lineFinalTotal": 148,
+				"discountType": null,
+				"discountValue": null,
+				"variations": [
+					{
+						"id": "var_1",
+						"attributeId": "attr_1",
+						"attributeName": "Size",
+						"attributeValue": "M"
+					}
+				]
+			}
+		],
+		"summary": {
+			"totalItems": 1,
+			"totalQuantity": 8
+		}
+	},
+	"errors": [],
+	"meta": {}
+}
+```
+
+### Error Cases
+
+- `POS_ORDER_NOT_FOUND`: order id does not exist or is deleted
+- `BILL_UPDATE_FORBIDDEN`: authenticated user is not owner of the bill
+- `PRODUCT_NOT_FOUND`, `VARIATION_NOT_FOUND`, `VARIATION_PRODUCT_MISMATCH`
+- `INSUFFICIENT_PRODUCT_STOCK`, `INSUFFICIENT_STORE_STOCK`
+
+---
+
+## 4. Delete POS Bill (Soft Delete)
+
+- **Method:** `DELETE`
+- **URL:** `/api/pos/bill/:orderId/delete`
+- **Auth:** Required
+- **Auth Source:** HTTP-only `accessToken` cookie
+
+### Purpose
+
+Soft-delete a POS bill and its related order lines using `deletedAt` fields, instead of permanently deleting records.
+
+### Behavior
+
+This endpoint runs in one DB transaction and:
+
+- restores product stock from the bill items back to products
+- restores store stock summaries/buckets when bill has a `storeId`
+- sets `deletedAt` on `PosOrderItemVariation`
+- sets `deletedAt` on `PosOrderItem`
+- sets `deletedAt` on `PosOrder`
+
+### Request
+
+Path param:
+
+- `orderId` (required): POS order id to delete
+
+No request body required.
+
+### Success Response
+
+Status: `200`
+
+```json
+{
+	"success": true,
+	"message": "POS bill deleted",
+	"data": {
+		"id": "pos_order_1",
+		"invoiceNumber": "000123456789",
+		"deletedAt": "2026-04-18T11:10:00.000Z"
+	},
+	"errors": [],
+	"meta": {}
+}
+```
+
+### Error Cases
+
+- `POS_ORDER_NOT_FOUND`: order id does not exist or is already soft-deleted
+- `BILL_DELETE_FORBIDDEN`: authenticated user is not owner of the bill

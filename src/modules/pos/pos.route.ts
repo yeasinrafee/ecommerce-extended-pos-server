@@ -7,5 +7,7 @@ const router = Router();
 
 router.get('/get-products', asyncHandler(posController.getProducts));
 router.post('/bill/create', authenticate, asyncHandler(posController.createBill));
+router.patch('/bill/:orderId/update', authenticate, asyncHandler(posController.updateBill));
+router.delete('/bill/:orderId/delete', authenticate, asyncHandler(posController.deleteBill));
 
 export const posRoutes = router;

@@ -28,6 +28,8 @@ export type CreatePosBillInput = {
 	products?: PosProductLineInput[];
 };
 
+export type UpdatePosBillInput = CreatePosBillInput;
+
 export type NormalizedPosBillLine = {
 	productId: string;
 	quantity: number;
