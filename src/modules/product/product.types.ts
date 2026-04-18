@@ -27,6 +27,7 @@ export type CreateProductDto = {
 	shortDescription?: string | null;
 	description: string;
 	basePrice: number;
+	posPrice?: number | null;
 	discountType: DiscountType;
 	discountValue?: number | null;
 	discountStartDate?: Date | null;
@@ -67,6 +68,7 @@ export type UpdateProductDto = {
 	shortDescription?: string | null;
 	description: string;
 	basePrice: number;
+	posPrice?: number | null;
 	discountType: DiscountType;
 	discountValue?: number | null;
 	discountStartDate?: Date | null;

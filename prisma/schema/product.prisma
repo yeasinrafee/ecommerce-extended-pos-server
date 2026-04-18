@@ -4,6 +4,7 @@ model Product {
   slug              String        @unique
   shortDescription  String?
   description       String?
+  posPrice          Float?
   Baseprice         Float
   finalPrice        Float
   discountType      DiscountType?
@@ -17,7 +18,7 @@ model Product {
   width             Float?
   height            Float?
   volume            Float?
-  sku               String?       
+  sku               String?
   discountStartDate DateTime?
   discountEndDate   DateTime?
   brandId           String?
@@ -41,7 +42,7 @@ model Product {
 
   orderItems OrderItem[]
 
-  stockProducts StockProduct[]
+  stockProducts         StockProduct[]
   stockProductTransfers StockProductTransfer[]
 
   offerProducts OfferProduct[]
@@ -97,8 +98,8 @@ model ProductVariation {
   updatedAt      DateTime  @updatedAt
   deletedAt      DateTime?
 
-  orderItems OrderItemVariation[]
+  orderItems             OrderItemVariation[]
+  wishlistItemVariations WishlistItemVariation[]
 
   @@unique([productId, attributeId, attributeValue])
-  wishlistItemVariations WishlistItemVariation[]
 }

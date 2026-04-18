@@ -26,6 +26,16 @@ const nullablePositiveNumberSchema = z.preprocess(
 	z.number().positive().nullable()
 );
 
+const nullablePositivePriceSchema = z.preprocess(
+	(value) => {
+		if (value === '' || value === null || value === undefined) {
+			return null;
+		}
+		return Number(value);
+	},
+	z.number().positive().nullable()
+);
+
 const nullableDateSchema = z.preprocess(
 	(value) => {
 		if (value === '' || value === null || value === undefined) {
@@ -46,6 +56,7 @@ const createProductBodySchema = z.object({
 	}, z.string().nullable()),
 	description: z.string().trim().min(1, 'Description is required'),
 	basePrice: z.coerce.number().nonnegative(),
+	posPrice: nullablePositivePriceSchema,
 	discountType: z.enum(['NONE', 'FLAT_DISCOUNT', 'PERCENTAGE_DISCOUNT']),
 	discountValue: nullableNumberSchema,
 	discountStartDate: nullableDateSchema,
@@ -177,6 +188,7 @@ const createProduct = async (req: Request, res: Response) => {
 		shortDescription: req.body.shortDescription,
 		description: req.body.description,
 		basePrice: req.body.basePrice,
+		posPrice: req.body.posPrice,
 		discountType: req.body.discountType,
 		discountValue: req.body.discountValue,
 		discountStartDate: req.body.discountStartDate,
@@ -255,6 +267,7 @@ const createProduct = async (req: Request, res: Response) => {
 			shortDescription: parsed.shortDescription,
 			description: parsed.description,
 			basePrice: parsed.basePrice,
+			posPrice: parsed.posPrice,
 			discountType: parsed.discountType,
 			discountValue: parsed.discountValue,
 			discountStartDate: parsed.discountStartDate,
@@ -410,6 +423,7 @@ const updateProductBodySchema = z.object({
 	}, z.string().nullable()),
 	description: z.string().trim().min(1, 'Description is required'),
 	basePrice: z.coerce.number().nonnegative(),
+	posPrice: nullablePositivePriceSchema,
 	discountType: z.enum(['NONE', 'FLAT_DISCOUNT', 'PERCENTAGE_DISCOUNT']),
 	discountValue: nullableNumberSchema,
 	discountStartDate: nullableDateSchema,
@@ -507,6 +521,7 @@ const updateProduct = async (req: Request, res: Response) => {
 		shortDescription: req.body.shortDescription,
 		description: req.body.description,
 		basePrice: req.body.basePrice,
+		posPrice: req.body.posPrice,
 		discountType: req.body.discountType,
 		discountValue: req.body.discountValue,
 		discountStartDate: req.body.discountStartDate,
@@ -626,6 +641,7 @@ const updateProduct = async (req: Request, res: Response) => {
 			shortDescription: parsed.shortDescription,
 			description: parsed.description,
 			basePrice: parsed.basePrice,
+			posPrice: parsed.posPrice,
 			discountType: parsed.discountType,
 			discountValue: parsed.discountValue,
 			discountStartDate: parsed.discountStartDate,
