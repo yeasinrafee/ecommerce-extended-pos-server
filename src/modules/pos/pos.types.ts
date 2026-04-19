@@ -1,3 +1,5 @@
+import type { DiscountType, PaymentMethod } from '@prisma/client';
+
 export type PosProductsQuery = {
 	storeId?: string;
 	searchTerm?: string;
@@ -22,8 +24,17 @@ export type PosProductLineInput = {
 	variations?: PosVariationLineInput[];
 };
 
+export type PosPaymentLineInput = {
+	amount?: number;
+	paymentMethod?: PaymentMethod;
+	bankId?: string;
+};
+
 export type CreatePosBillInput = {
 	storeId?: string;
+	discountType?: DiscountType;
+	discountValue?: number;
+	payments?: PosPaymentLineInput[];
 	productId?: string;
 	quantity?: number;
 	productIds?: string[];
@@ -40,4 +51,10 @@ export type NormalizedPosBillLine = {
 	productId: string;
 	quantity: number;
 	variationIds: string[];
+};
+
+export type NormalizedPosPaymentLine = {
+	amount: number;
+	paymentMethod: PaymentMethod;
+	bankId: string | null;
 };

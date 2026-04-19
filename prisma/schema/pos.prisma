@@ -1,16 +1,19 @@
 model PosOrder {
-    id            String         @id @default(uuid())
-    userId        String
-    user          User           @relation(fields: [userId], references: [id])
-    invoiceNumber String         @unique
-    baseAmount    Float
-    finalAmount   Float
-    createdAt     DateTime       @default(now())
-    updatedAt     DateTime       @updatedAt
-    deletedAt     DateTime?
-    storeId       String?
-    store         Store?         @relation(fields: [storeId], references: [id])
-    posOrderItems PosOrderItem[]
+    id             String          @id @default(uuid())
+    userId         String
+    user           User            @relation(fields: [userId], references: [id])
+    invoiceNumber  String          @unique
+    baseAmount     Float
+    finalAmount    Float
+    orderDiscountType DiscountType @default(NONE)
+    orderDiscountValue Float       @default(0)
+    createdAt      DateTime        @default(now())
+    updatedAt      DateTime        @updatedAt
+    deletedAt      DateTime?
+    storeId        String?
+    paymentStatus         PaymentStatus   @default(PENDING)
+    store          Store?          @relation(fields: [storeId], references: [id])
+    posOrderItems  PosOrderItem[]
     globalPayments GlobalPayment[]
 }
 

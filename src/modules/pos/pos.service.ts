@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
-import { DiscountType, OrderStatus, Prisma } from '@prisma/client';
+import { DiscountType, OrderStatus, PaymentMethod, PaymentStatus, Prisma } from '@prisma/client';
 import { AppError } from '../../common/errors/app-error.js';
 import { prisma } from '../../config/prisma.js';
-import type { CreatePosBillInput, NormalizedPosBillLine, PosBillsListQuery, PosProductLineInput, PosProductsQuery, UpdatePosBillInput } from './pos.types.js';
+import { posPaymentService } from '../pos-payment/pos-payment.service.js';
+import type { CreatePosBillInput, NormalizedPosBillLine, NormalizedPosPaymentLine, PosBillsListQuery, PosProductLineInput, PosProductsQuery, UpdatePosBillInput } from './pos.types.js';
 
 const productInclude = {
 	brand: true,
@@ -87,6 +88,7 @@ const getBills = async ({ page = 1, limit = 10 }: PosBillsListQuery = {}) => {
 				id: true,
 				invoiceNumber: true,
 				finalAmount: true,
+				paymentStatus: true,
 				createdAt: true,
 				user: {
 					select: {
@@ -115,6 +117,7 @@ const getBills = async ({ page = 1, limit = 10 }: PosBillsListQuery = {}) => {
 			invoiceNumber: order.invoiceNumber,
 			totalQuantity: order.posOrderItems.reduce((sum, item) => sum + item.quantity, 0),
 			totalAmount: order.finalAmount,
+			paymentStatus: order.paymentStatus,
 			createdAt: order.createdAt,
 			processedBy: {
 				userId: order.user.id,
@@ -170,6 +173,35 @@ const toStringArray = (value: unknown) => {
 	return value.map((item) => toTrimmedString(item)).filter(Boolean);
 };
 
+const toFiniteNumber = (value: unknown) => {
+	if (typeof value === 'number') {
+		return Number.isFinite(value) ? value : null;
+	}
+
+	if (typeof value === 'string' && value.trim().length > 0) {
+		const parsed = Number(value);
+		return Number.isFinite(parsed) ? parsed : null;
+	}
+
+	return null;
+};
+
+const toRoundedMoney = (value: number) => Number(value.toFixed(2));
+
+const validPaymentMethods = new Set<PaymentMethod>([
+	PaymentMethod.CASH,
+	PaymentMethod.BANKCARD,
+	PaymentMethod.BKASH,
+	PaymentMethod.NAGAD,
+	PaymentMethod.ROCKET
+]);
+
+const validDiscountTypes = new Set<DiscountType>([
+	DiscountType.NONE,
+	DiscountType.FLAT_DISCOUNT,
+	DiscountType.PERCENTAGE_DISCOUNT
+]);
+
 const calculateDiscountedPrice = (basePrice: number, discountType: DiscountType, discountValue: number) => {
 	if (discountType === DiscountType.FLAT_DISCOUNT) {
 		return Math.max(0, basePrice - discountValue);
@@ -180,6 +212,174 @@ const calculateDiscountedPrice = (basePrice: number, discountType: DiscountType,
 	}
 
 	return basePrice;
+};
+
+const normalizeOrderDiscountInput = (discountTypeInput: unknown, discountValueInput: unknown, fallback?: { discountType: DiscountType; discountValue: number }) => {
+	if (discountTypeInput === undefined && discountValueInput === undefined && fallback) {
+		return fallback;
+	}
+
+	if (discountTypeInput === undefined && discountValueInput === undefined) {
+		return {
+			discountType: DiscountType.NONE,
+			discountValue: 0
+		};
+	}
+
+	if (discountTypeInput === undefined && discountValueInput !== undefined && fallback) {
+		if (fallback.discountType === DiscountType.NONE) {
+			throw new AppError(400, 'Invalid discount value', [
+				{ field: 'discountType', message: 'discountType is required when setting discountValue', code: 'INVALID_DISCOUNT_TYPE' }
+			]);
+		}
+
+		return normalizeOrderDiscountInput(fallback.discountType, discountValueInput, fallback);
+	}
+
+	const parsedTypeValue = discountTypeInput === undefined || discountTypeInput === null || discountTypeInput === ''
+		? DiscountType.NONE
+		: String(discountTypeInput).trim();
+
+	if (!validDiscountTypes.has(parsedTypeValue as DiscountType)) {
+		throw new AppError(400, 'Invalid discount type', [
+			{ field: 'discountType', message: 'discountType must be PERCENTAGE_DISCOUNT, FLAT_DISCOUNT, or NONE', code: 'INVALID_DISCOUNT_TYPE' }
+		]);
+	}
+
+	const discountType = parsedTypeValue as DiscountType;
+
+	if (discountType === DiscountType.NONE) {
+		return {
+			discountType,
+			discountValue: 0
+		};
+	}
+
+	const parsedValue = toFiniteNumber(discountValueInput);
+	if (parsedValue === null || parsedValue < 0) {
+		throw new AppError(400, 'Invalid discount value', [
+			{ field: 'discountValue', message: 'discountValue must be a positive number', code: 'INVALID_DISCOUNT_VALUE' }
+		]);
+	}
+
+	if (discountType === DiscountType.PERCENTAGE_DISCOUNT && parsedValue > 100) {
+		throw new AppError(400, 'Invalid discount value', [
+			{ field: 'discountValue', message: 'Percentage discount cannot exceed 100', code: 'INVALID_DISCOUNT_VALUE' }
+		]);
+	}
+
+	return {
+		discountType,
+		discountValue: toRoundedMoney(parsedValue)
+	};
+};
+
+const applyOrderDiscount = (amount: number, discountType: DiscountType, discountValue: number) => {
+	if (discountType === DiscountType.PERCENTAGE_DISCOUNT) {
+		return Math.max(0, toRoundedMoney(amount - (amount * discountValue) / 100));
+	}
+
+	if (discountType === DiscountType.FLAT_DISCOUNT) {
+		return Math.max(0, toRoundedMoney(amount - discountValue));
+	}
+
+	return toRoundedMoney(amount);
+};
+
+const normalizePaymentLines = (value: unknown): NormalizedPosPaymentLine[] => {
+	if (value === undefined || value === null) {
+		return [];
+	}
+
+	if (!Array.isArray(value)) {
+		throw new AppError(400, 'Invalid payments payload', [
+			{ field: 'payments', message: 'payments must be an array', code: 'INVALID_PAYMENTS_PAYLOAD' }
+		]);
+	}
+
+	return value.map((item, index) => {
+		if (!item || typeof item !== 'object') {
+			throw new AppError(400, 'Invalid payment line', [
+				{ field: `payments.${index}`, message: 'Each payment item must be an object', code: 'INVALID_PAYMENT_LINE' }
+			]);
+		}
+
+		const paymentRecord = item as { amount?: unknown; paymentMethod?: unknown; bankId?: unknown };
+		const amount = toFiniteNumber(paymentRecord.amount);
+		if (amount === null || amount <= 0) {
+			throw new AppError(400, 'Invalid payment amount', [
+				{ field: `payments.${index}.amount`, message: 'Payment amount must be greater than 0', code: 'INVALID_PAYMENT_AMOUNT' }
+			]);
+		}
+
+		const paymentMethodValue = typeof paymentRecord.paymentMethod === 'string'
+			? paymentRecord.paymentMethod.trim()
+			: String(paymentRecord.paymentMethod ?? '').trim();
+
+		if (!validPaymentMethods.has(paymentMethodValue as PaymentMethod)) {
+			throw new AppError(400, 'Invalid payment method', [
+				{ field: `payments.${index}.paymentMethod`, message: 'Invalid paymentMethod', code: 'INVALID_PAYMENT_METHOD' }
+			]);
+		}
+
+		const bankId = typeof paymentRecord.bankId === 'string' && paymentRecord.bankId.trim().length > 0
+			? paymentRecord.bankId.trim()
+			: null;
+
+		if (paymentMethodValue === PaymentMethod.BANKCARD && !bankId) {
+			throw new AppError(400, 'Invalid bank card payment', [
+				{ field: `payments.${index}.bankId`, message: 'bankId is required when paymentMethod is BANKCARD', code: 'BANK_ID_REQUIRED' }
+			]);
+		}
+
+		if (paymentMethodValue !== PaymentMethod.BANKCARD && bankId) {
+			throw new AppError(400, 'Invalid bank id for payment method', [
+				{ field: `payments.${index}.bankId`, message: 'bankId is only allowed when paymentMethod is BANKCARD', code: 'BANK_ID_NOT_ALLOWED' }
+			]);
+		}
+
+		return {
+			amount: toRoundedMoney(amount),
+			paymentMethod: paymentMethodValue as PaymentMethod,
+			bankId: paymentMethodValue === PaymentMethod.BANKCARD ? bankId : null
+		};
+	});
+};
+
+const sumPaymentAmounts = (payments: NormalizedPosPaymentLine[]) => toRoundedMoney(payments.reduce((sum, payment) => sum + payment.amount, 0));
+
+const resolvePaymentStatusFromAmounts = (finalAmount: number, paidAmount: number) => {
+	if (finalAmount <= 0 || paidAmount >= finalAmount) {
+		return PaymentStatus.PAID;
+	}
+
+	if (paidAmount > 0) {
+		return PaymentStatus.DUE;
+	}
+
+	return PaymentStatus.PENDING;
+};
+
+const ensurePaymentBanksExist = async (tx: Prisma.TransactionClient, payments: NormalizedPosPaymentLine[]) => {
+	const bankIds = Array.from(new Set(payments.map((payment) => payment.bankId).filter((id): id is string => id !== null)));
+
+	if (bankIds.length === 0) {
+		return;
+	}
+
+	const banks = await tx.bank.findMany({
+		where: {
+			id: { in: bankIds },
+			deletedAt: null
+		},
+		select: { id: true }
+	});
+
+	if (banks.length !== bankIds.length) {
+		throw new AppError(400, 'Invalid bank id in payments', [
+			{ field: 'payments.bankId', message: 'One or more bank ids are invalid or deleted', code: 'INVALID_BANK_ID' }
+		]);
+	}
 };
 
 const toDateOnlyKey = (value: Date | null | undefined) => {
@@ -280,6 +480,8 @@ const normalizeCreatePosBillPayload = (payload: CreatePosBillInput) => {
 	}
 
 	const storeId = toTrimmedString(payload.storeId) || null;
+	const orderDiscount = normalizeOrderDiscountInput(payload.discountType, payload.discountValue);
+	const payments = normalizePaymentLines(payload.payments);
 
 	let lines: NormalizedPosBillLine[] = [];
 
@@ -361,7 +563,9 @@ const normalizeCreatePosBillPayload = (payload: CreatePosBillInput) => {
 
 	return {
 		storeId,
-		lines: Array.from(grouped.values())
+		lines: Array.from(grouped.values()),
+		orderDiscount,
+		payments
 	};
 };
 
@@ -520,6 +724,19 @@ const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: strin
 		where: { id: orderId },
 		include: {
 			store: true,
+			globalPayments: {
+				where: { deletedAt: null },
+				include: {
+					bank: {
+						select: {
+							id: true,
+							bankName: true,
+							accountNumber: true
+						}
+					}
+				},
+				orderBy: { createdAt: 'asc' }
+			},
 			posOrderItems: {
 				where: { deletedAt: null },
 				include: {
@@ -597,12 +814,17 @@ const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: strin
 	});
 
 	const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
+	const totalPaid = toRoundedMoney(createdOrder.globalPayments.reduce((sum, payment) => sum + payment.amount, 0));
+	const dueAmount = Math.max(0, toRoundedMoney(createdOrder.finalAmount - totalPaid));
 
 	return {
 		id: createdOrder.id,
 		invoiceNumber: createdOrder.invoiceNumber,
 		storeId: createdOrder.storeId,
 		store: createdOrder.store,
+		paymentStatus: createdOrder.paymentStatus,
+		orderDiscountType: createdOrder.orderDiscountType,
+		orderDiscountValue: createdOrder.orderDiscountValue,
 		cashier: {
 			id: cashierUser?.id ?? userId,
 			email: cashierUser?.email ?? null,
@@ -610,8 +832,18 @@ const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: strin
 		},
 		baseAmount: createdOrder.baseAmount,
 		finalAmount: createdOrder.finalAmount,
+		totalPaid,
+		dueAmount,
 		createdAt: createdOrder.createdAt,
 		updatedAt: createdOrder.updatedAt,
+		payments: createdOrder.globalPayments.map((payment) => ({
+			id: payment.id,
+			amount: payment.amount,
+			paymentMethod: payment.paymentMethod,
+			bankId: payment.bankId,
+			bank: payment.bank,
+			createdAt: payment.createdAt
+		})),
 		items,
 		summary: {
 			totalItems: items.length,
@@ -625,260 +857,281 @@ const createBill = async (userId: string, payload: CreatePosBillInput) => {
 
 	for (let attempt = 0; attempt < 3; attempt += 1) {
 		try {
-			return await prisma.$transaction(async (tx) => {
-		if (normalized.storeId) {
-			const store = await tx.store.findFirst({ where: { id: normalized.storeId, deletedAt: null } });
-			if (!store) {
-				throw new AppError(404, 'Store not found', [
-					{ field: 'storeId', message: 'No active store found with this id', code: 'STORE_NOT_FOUND' }
-				]);
-			}
-		}
-
-		const uniqueProductIds = Array.from(new Set(normalized.lines.map((line) => line.productId)));
-		const uniqueVariationIds = Array.from(
-			new Set(normalized.lines.flatMap((line) => line.variationIds).filter(Boolean))
-		);
-
-		const products = await tx.product.findMany({
-			where: {
-				id: { in: uniqueProductIds },
-				deletedAt: null
-			},
-			select: {
-				id: true,
-				name: true,
-				image: true,
-				posPrice: true,
-				Baseprice: true,
-				finalPrice: true,
-				discountType: true,
-				discountValue: true,
-				discountStartDate: true,
-				discountEndDate: true,
-				stock: true
-			}
-		});
-
-		if (products.length !== uniqueProductIds.length) {
-			const foundIds = new Set(products.map((p) => p.id));
-			const missing = uniqueProductIds.filter((id) => !foundIds.has(id));
-			throw new AppError(404, 'Some products were not found', [
-				{ field: 'products', message: `Missing products: ${missing.join(', ')}`, code: 'PRODUCT_NOT_FOUND' }
-			]);
-		}
-
-		const variationMap = new Map<string, {
-			id: string;
-			productId: string;
-			basePrice: number;
-			finalPrice: number;
-			attributeValue: string;
-			attribute: { id: string; name: string };
-		}>();
-
-		if (uniqueVariationIds.length > 0) {
-			const variations = await tx.productVariation.findMany({
-				where: {
-					id: { in: uniqueVariationIds },
-					deletedAt: null
-				},
-				select: {
-					id: true,
-					productId: true,
-					basePrice: true,
-					finalPrice: true,
-					attributeValue: true,
-					attribute: {
-						select: {
-							id: true,
-							name: true
-						}
+			const transactionResult = await prisma.$transaction(async (tx) => {
+				if (normalized.storeId) {
+					const store = await tx.store.findFirst({ where: { id: normalized.storeId, deletedAt: null } });
+					if (!store) {
+						throw new AppError(404, 'Store not found', [
+							{ field: 'storeId', message: 'No active store found with this id', code: 'STORE_NOT_FOUND' }
+						]);
 					}
 				}
-			});
 
-			if (variations.length !== uniqueVariationIds.length) {
-				const foundVariationIds = new Set(variations.map((v) => v.id));
-				const missing = uniqueVariationIds.filter((id) => !foundVariationIds.has(id));
-				throw new AppError(404, 'Some variations were not found', [
-					{ field: 'variationIds', message: `Missing variations: ${missing.join(', ')}`, code: 'VARIATION_NOT_FOUND' }
-				]);
-			}
+				await ensurePaymentBanksExist(tx, normalized.payments);
 
-			for (const variation of variations) {
-				variationMap.set(variation.id, variation);
-			}
-		}
+				const uniqueProductIds = Array.from(new Set(normalized.lines.map((line) => line.productId)));
+				const uniqueVariationIds = Array.from(new Set(normalized.lines.flatMap((line) => line.variationIds).filter(Boolean)));
 
-		const productMap = new Map(products.map((product) => [product.id, product]));
-		const now = new Date();
-
-		const processedLines = normalized.lines.map((line) => {
-			const product = productMap.get(line.productId);
-			if (!product) {
-				throw new AppError(404, 'Product not found', [
-					{ field: 'products', message: `Product ${line.productId} not found`, code: 'PRODUCT_NOT_FOUND' }
-				]);
-			}
-
-			if (line.variationIds.length > 0) {
-				const selectedVariations = line.variationIds.map((variationId) => {
-					const variation = variationMap.get(variationId);
-					if (!variation) {
-						throw new AppError(404, 'Variation not found', [
-							{ field: 'variationIds', message: `Variation ${variationId} not found`, code: 'VARIATION_NOT_FOUND' }
-						]);
-					}
-
-					if (variation.productId !== product.id) {
-						throw new AppError(400, 'Variation does not belong to product', [
-							{ field: 'variationIds', message: `Variation ${variationId} does not belong to product ${product.id}`, code: 'VARIATION_PRODUCT_MISMATCH' }
-						]);
-					}
-
-					return variation;
-				});
-
-				const unitBasePrice = Math.max(...selectedVariations.map((variation) => variation.basePrice));
-				const unitFinalPrice = Math.max(...selectedVariations.map((variation) => variation.finalPrice));
-
-				return {
-					product,
-					quantity: line.quantity,
-					variationIds: line.variationIds,
-					selectedVariations,
-					unitBasePrice,
-					unitFinalPrice,
-					discountType: null as DiscountType | null,
-					discountValue: null as number | null,
-					lineBaseTotal: Number((unitBasePrice * line.quantity).toFixed(2)),
-					lineFinalTotal: Number((unitFinalPrice * line.quantity).toFixed(2))
-				};
-			}
-
-			const unitBasePrice = product.posPrice ?? product.Baseprice;
-			const hasActiveDiscount =
-				product.discountType != null &&
-				product.discountType !== DiscountType.NONE &&
-				product.discountValue != null &&
-				isDateWithinInclusiveRange(now, product.discountStartDate, product.discountEndDate);
-
-			const unitFinalPrice = hasActiveDiscount
-				? calculateDiscountedPrice(unitBasePrice, product.discountType as DiscountType, product.discountValue as number)
-				: unitBasePrice;
-
-			return {
-				product,
-				quantity: line.quantity,
-				variationIds: [] as string[],
-				selectedVariations: [] as any[],
-				unitBasePrice,
-				unitFinalPrice,
-				discountType: hasActiveDiscount ? (product.discountType as DiscountType) : DiscountType.NONE,
-				discountValue: hasActiveDiscount ? (product.discountValue as number) : 0,
-				lineBaseTotal: Number((unitBasePrice * line.quantity).toFixed(2)),
-				lineFinalTotal: Number((unitFinalPrice * line.quantity).toFixed(2))
-			};
-		});
-
-		const perProductQuantity = new Map<string, number>();
-		for (const line of processedLines) {
-			perProductQuantity.set(line.product.id, (perProductQuantity.get(line.product.id) ?? 0) + line.quantity);
-		}
-
-		for (const [productId, totalQuantity] of perProductQuantity.entries()) {
-			const product = productMap.get(productId);
-			if (!product) continue;
-			if (product.stock < totalQuantity) {
-				throw new AppError(400, 'Not enough product stock', [
-					{ field: 'products', message: `Not enough stock for product ${product.name}`, code: 'INSUFFICIENT_PRODUCT_STOCK' }
-				]);
-			}
-
-			if (normalized.storeId) {
-				const storeStockSummary = await tx.stockProduct.aggregate({
+				const products = await tx.product.findMany({
 					where: {
-						productId,
-						deletedAt: null,
-						stock: {
-							storeId: normalized.storeId,
-							deletedAt: null
-						}
+						id: { in: uniqueProductIds },
+						deletedAt: null
 					},
-					_sum: { quantity: true }
+					select: {
+						id: true,
+						name: true,
+						image: true,
+						posPrice: true,
+						Baseprice: true,
+						finalPrice: true,
+						discountType: true,
+						discountValue: true,
+						discountStartDate: true,
+						discountEndDate: true,
+						stock: true
+					}
 				});
 
-				const availableStoreQuantity = storeStockSummary._sum.quantity ?? 0;
-				if (availableStoreQuantity < totalQuantity) {
-					throw new AppError(400, 'Not enough store stock', [
-						{ field: 'products', message: `Store does not have enough stock for product ${product.name}`, code: 'INSUFFICIENT_STORE_STOCK' }
+				if (products.length !== uniqueProductIds.length) {
+					const foundIds = new Set(products.map((p) => p.id));
+					const missing = uniqueProductIds.filter((id) => !foundIds.has(id));
+					throw new AppError(404, 'Some products were not found', [
+						{ field: 'products', message: `Missing products: ${missing.join(', ')}`, code: 'PRODUCT_NOT_FOUND' }
 					]);
 				}
-			}
-		}
 
-		const baseAmount = Number(processedLines.reduce((sum, line) => sum + line.lineBaseTotal, 0).toFixed(2));
-		const finalAmount = Number(processedLines.reduce((sum, line) => sum + line.lineFinalTotal, 0).toFixed(2));
-		const invoiceNumber = await getUniquePosInvoiceNumber(tx);
+				const variationMap = new Map<string, {
+					id: string;
+					productId: string;
+					basePrice: number;
+					finalPrice: number;
+					attributeValue: string;
+					attribute: { id: string; name: string };
+				}>();
 
-		const order = await tx.posOrder.create({
-			data: {
-				userId,
-				storeId: normalized.storeId,
-				invoiceNumber,
-				baseAmount,
-				finalAmount
-			}
-		});
+				if (uniqueVariationIds.length > 0) {
+					const variations = await tx.productVariation.findMany({
+						where: {
+							id: { in: uniqueVariationIds },
+							deletedAt: null
+						},
+						select: {
+							id: true,
+							productId: true,
+							basePrice: true,
+							finalPrice: true,
+							attributeValue: true,
+							attribute: {
+								select: {
+									id: true,
+									name: true
+								}
+							}
+						}
+					});
 
-		for (const line of processedLines) {
-			const createdItem = await tx.posOrderItem.create({
-				data: {
-					posOrderId: order.id,
-					productId: line.product.id,
-					quantity: line.quantity,
-					Baseprice: line.unitBasePrice,
-					finalPrice: line.unitFinalPrice,
-					discountType: line.discountType,
-					discountValue: line.discountValue
+					if (variations.length !== uniqueVariationIds.length) {
+						const foundVariationIds = new Set(variations.map((v) => v.id));
+						const missing = uniqueVariationIds.filter((id) => !foundVariationIds.has(id));
+						throw new AppError(404, 'Some variations were not found', [
+							{ field: 'variationIds', message: `Missing variations: ${missing.join(', ')}`, code: 'VARIATION_NOT_FOUND' }
+						]);
+					}
+
+					for (const variation of variations) {
+						variationMap.set(variation.id, variation);
+					}
 				}
-			});
 
-			if (line.variationIds.length > 0) {
-				await tx.posOrderItemVariation.createMany({
-					data: line.variationIds.map((variationId) => ({
-						orderItemId: createdItem.id,
-						productVariationId: variationId
-					}))
+				const productMap = new Map(products.map((product) => [product.id, product]));
+				const now = new Date();
+
+				const processedLines = normalized.lines.map((line) => {
+					const product = productMap.get(line.productId);
+					if (!product) {
+						throw new AppError(404, 'Product not found', [
+							{ field: 'products', message: `Product ${line.productId} not found`, code: 'PRODUCT_NOT_FOUND' }
+						]);
+					}
+
+					if (line.variationIds.length > 0) {
+						const selectedVariations = line.variationIds.map((variationId) => {
+							const variation = variationMap.get(variationId);
+							if (!variation) {
+								throw new AppError(404, 'Variation not found', [
+									{ field: 'variationIds', message: `Variation ${variationId} not found`, code: 'VARIATION_NOT_FOUND' }
+								]);
+							}
+
+							if (variation.productId !== product.id) {
+								throw new AppError(400, 'Variation does not belong to product', [
+									{ field: 'variationIds', message: `Variation ${variationId} does not belong to product ${product.id}`, code: 'VARIATION_PRODUCT_MISMATCH' }
+								]);
+							}
+
+							return variation;
+						});
+
+						const unitBasePrice = Math.max(...selectedVariations.map((variation) => variation.basePrice));
+						const unitFinalPrice = Math.max(...selectedVariations.map((variation) => variation.finalPrice));
+
+						return {
+							product,
+							quantity: line.quantity,
+							variationIds: line.variationIds,
+							unitBasePrice,
+							unitFinalPrice,
+							discountType: null as DiscountType | null,
+							discountValue: null as number | null,
+							lineBaseTotal: Number((unitBasePrice * line.quantity).toFixed(2)),
+							lineFinalTotal: Number((unitFinalPrice * line.quantity).toFixed(2))
+						};
+					}
+
+					const unitBasePrice = product.posPrice ?? product.Baseprice;
+					const hasActiveDiscount =
+						product.discountType != null &&
+						product.discountType !== DiscountType.NONE &&
+						product.discountValue != null &&
+						isDateWithinInclusiveRange(now, product.discountStartDate, product.discountEndDate);
+
+					const unitFinalPrice = hasActiveDiscount
+						? calculateDiscountedPrice(unitBasePrice, product.discountType as DiscountType, product.discountValue as number)
+						: unitBasePrice;
+
+					return {
+						product,
+						quantity: line.quantity,
+						variationIds: [] as string[],
+						unitBasePrice,
+						unitFinalPrice,
+						discountType: hasActiveDiscount ? (product.discountType as DiscountType) : DiscountType.NONE,
+						discountValue: hasActiveDiscount ? (product.discountValue as number) : 0,
+						lineBaseTotal: Number((unitBasePrice * line.quantity).toFixed(2)),
+						lineFinalTotal: Number((unitFinalPrice * line.quantity).toFixed(2))
+					};
 				});
-			}
-		}
 
-		for (const [productId, totalQuantity] of perProductQuantity.entries()) {
-			const productUpdate = await tx.product.updateMany({
-				where: {
-					id: productId,
-					stock: { gte: totalQuantity }
-				},
-				data: {
-					stock: { decrement: totalQuantity }
+				const perProductQuantity = new Map<string, number>();
+				for (const line of processedLines) {
+					perProductQuantity.set(line.product.id, (perProductQuantity.get(line.product.id) ?? 0) + line.quantity);
 				}
+
+				for (const [productId, totalQuantity] of perProductQuantity.entries()) {
+					const product = productMap.get(productId);
+					if (!product) continue;
+					if (product.stock < totalQuantity) {
+						throw new AppError(400, 'Not enough product stock', [
+							{ field: 'products', message: `Not enough stock for product ${product.name}`, code: 'INSUFFICIENT_PRODUCT_STOCK' }
+						]);
+					}
+
+					if (normalized.storeId) {
+						const storeStockSummary = await tx.stockProduct.aggregate({
+							where: {
+								productId,
+								deletedAt: null,
+								stock: {
+									storeId: normalized.storeId,
+									deletedAt: null
+								}
+							},
+							_sum: { quantity: true }
+						});
+
+						const availableStoreQuantity = storeStockSummary._sum.quantity ?? 0;
+						if (availableStoreQuantity < totalQuantity) {
+							throw new AppError(400, 'Not enough store stock', [
+								{ field: 'products', message: `Store does not have enough stock for product ${product.name}`, code: 'INSUFFICIENT_STORE_STOCK' }
+							]);
+						}
+					}
+				}
+
+				const baseAmount = toRoundedMoney(processedLines.reduce((sum, line) => sum + line.lineBaseTotal, 0));
+				const subtotalAmount = toRoundedMoney(processedLines.reduce((sum, line) => sum + line.lineFinalTotal, 0));
+				const finalAmount = applyOrderDiscount(subtotalAmount, normalized.orderDiscount.discountType, normalized.orderDiscount.discountValue);
+				const incomingPaymentTotal = sumPaymentAmounts(normalized.payments);
+
+				if (incomingPaymentTotal > finalAmount) {
+					throw new AppError(400, 'Overpayment is not allowed', [
+						{ field: 'payments', message: 'Total payment amount cannot exceed order final amount', code: 'OVERPAYMENT_NOT_ALLOWED' }
+					]);
+				}
+
+				const invoiceNumber = await getUniquePosInvoiceNumber(tx);
+
+				const order = await tx.posOrder.create({
+					data: {
+						userId,
+						storeId: normalized.storeId,
+						invoiceNumber,
+						baseAmount,
+						finalAmount,
+						orderDiscountType: normalized.orderDiscount.discountType,
+						orderDiscountValue: normalized.orderDiscount.discountValue,
+						paymentStatus: resolvePaymentStatusFromAmounts(finalAmount, 0)
+					}
+				});
+
+				for (const line of processedLines) {
+					const createdItem = await tx.posOrderItem.create({
+						data: {
+							posOrderId: order.id,
+							productId: line.product.id,
+							quantity: line.quantity,
+							Baseprice: line.unitBasePrice,
+							finalPrice: line.unitFinalPrice,
+							discountType: line.discountType,
+							discountValue: line.discountValue
+						}
+					});
+
+					if (line.variationIds.length > 0) {
+						await tx.posOrderItemVariation.createMany({
+							data: line.variationIds.map((variationId) => ({
+								orderItemId: createdItem.id,
+								productVariationId: variationId
+							}))
+						});
+					}
+				}
+
+				for (const [productId, totalQuantity] of perProductQuantity.entries()) {
+					const productUpdate = await tx.product.updateMany({
+						where: {
+							id: productId,
+							stock: { gte: totalQuantity }
+						},
+						data: {
+							stock: { decrement: totalQuantity }
+						}
+					});
+
+					if (productUpdate.count === 0) {
+						throw new AppError(400, 'Product stock update failed', [
+							{ field: 'products', message: `Unable to update stock for product ${productId}`, code: 'PRODUCT_STOCK_UPDATE_FAILED' }
+						]);
+					}
+
+					if (normalized.storeId) {
+						await decrementStoreStockProducts(tx, normalized.storeId, productId, totalQuantity);
+					}
+				}
+
+				const response = await loadPosOrderResponse(tx, order.id, userId);
+
+				return {
+					response,
+					orderId: order.id
+				};
 			});
 
-			if (productUpdate.count === 0) {
-				throw new AppError(400, 'Product stock update failed', [
-					{ field: 'products', message: `Unable to update stock for product ${productId}`, code: 'PRODUCT_STOCK_UPDATE_FAILED' }
-				]);
+			if (normalized.payments.length > 0) {
+				void posPaymentService.enqueuePayments(transactionResult.orderId, normalized.payments).catch(() => undefined);
 			}
 
-			if (normalized.storeId) {
-				await decrementStoreStockProducts(tx, normalized.storeId, productId, totalQuantity);
-			}
-		}
-
-		return loadPosOrderResponse(tx, order.id, userId);
-			});
+			return transactionResult.response;
 		} catch (error) {
 			if (
 				error instanceof Prisma.PrismaClientKnownRequestError &&
@@ -901,13 +1154,18 @@ const createBill = async (userId: string, payload: CreatePosBillInput) => {
 const updateBill = async (orderId: string, userId: string, payload: UpdatePosBillInput) => {
 	const normalizedFromPayload = normalizeCreatePosBillPayload(payload);
 
-	return prisma.$transaction(async (tx) => {
+	const transactionResult = await prisma.$transaction(async (tx) => {
 		const existingOrder = await tx.posOrder.findFirst({
 			where: {
 				id: orderId,
 				deletedAt: null
 			},
-			include: {
+			select: {
+				id: true,
+				userId: true,
+				storeId: true,
+				orderDiscountType: true,
+				orderDiscountValue: true,
 				posOrderItems: {
 					where: { deletedAt: null },
 					select: {
@@ -938,7 +1196,11 @@ const updateBill = async (orderId: string, userId: string, payload: UpdatePosBil
 
 		const normalized = {
 			...normalizedFromPayload,
-			storeId: nextStoreId
+			storeId: nextStoreId,
+			orderDiscount: normalizeOrderDiscountInput(payload.discountType, payload.discountValue, {
+				discountType: existingOrder.orderDiscountType,
+				discountValue: existingOrder.orderDiscountValue
+			})
 		};
 
 		if (normalized.storeId) {
@@ -949,6 +1211,8 @@ const updateBill = async (orderId: string, userId: string, payload: UpdatePosBil
 				]);
 			}
 		}
+
+		await ensurePaymentBanksExist(tx, normalized.payments);
 
 		const previousPerProductQuantity = new Map<string, number>();
 		for (const item of existingOrder.posOrderItems) {
@@ -1208,20 +1472,146 @@ const updateBill = async (orderId: string, userId: string, payload: UpdatePosBil
 			}
 		}
 
-		const baseAmount = Number(processedLines.reduce((sum, line) => sum + line.lineBaseTotal, 0).toFixed(2));
-		const finalAmount = Number(processedLines.reduce((sum, line) => sum + line.lineFinalTotal, 0).toFixed(2));
+		const baseAmount = toRoundedMoney(processedLines.reduce((sum, line) => sum + line.lineBaseTotal, 0));
+		const subtotalAmount = toRoundedMoney(processedLines.reduce((sum, line) => sum + line.lineFinalTotal, 0));
+		const finalAmount = applyOrderDiscount(subtotalAmount, normalized.orderDiscount.discountType, normalized.orderDiscount.discountValue);
+
+		const paidAggregate = await tx.globalPayment.aggregate({
+			where: {
+				posOrderId: existingOrder.id,
+				deletedAt: null
+			},
+			_sum: {
+				amount: true
+			}
+		});
+
+		const existingPaidAmount = toRoundedMoney(paidAggregate._sum.amount ?? 0);
+		const incomingPaymentTotal = sumPaymentAmounts(normalized.payments);
+
+		if (existingPaidAmount > finalAmount) {
+			throw new AppError(400, 'Overpayment is not allowed', [
+				{ field: 'payments', message: 'Existing paid amount is greater than the updated order total', code: 'OVERPAYMENT_NOT_ALLOWED' }
+			]);
+		}
+
+		if (toRoundedMoney(existingPaidAmount + incomingPaymentTotal) > finalAmount) {
+			throw new AppError(400, 'Overpayment is not allowed', [
+				{ field: 'payments', message: 'Total payment amount cannot exceed order final amount', code: 'OVERPAYMENT_NOT_ALLOWED' }
+			]);
+		}
 
 		await tx.posOrder.update({
 			where: { id: existingOrder.id },
 			data: {
 				storeId: normalized.storeId,
 				baseAmount,
-				finalAmount
+				finalAmount,
+				orderDiscountType: normalized.orderDiscount.discountType,
+				orderDiscountValue: normalized.orderDiscount.discountValue,
+				paymentStatus: resolvePaymentStatusFromAmounts(finalAmount, existingPaidAmount)
 			}
 		});
 
-		return loadPosOrderResponse(tx, existingOrder.id, userId);
+		const response = await loadPosOrderResponse(tx, existingOrder.id, userId);
+
+		return {
+			response,
+			orderId: existingOrder.id,
+			payments: normalized.payments
+		};
 	});
+
+	if (transactionResult.payments.length > 0) {
+		void posPaymentService.enqueuePayments(transactionResult.orderId, transactionResult.payments).catch(() => undefined);
+	}
+
+	return transactionResult.response;
+};
+
+const addBillPayments = async (orderId: string, userId: string, payload: { payments?: unknown }) => {
+	const payments = normalizePaymentLines(payload?.payments);
+
+	if (payments.length === 0) {
+		throw new AppError(400, 'No payments provided', [
+			{ field: 'payments', message: 'At least one payment record is required', code: 'PAYMENTS_REQUIRED' }
+		]);
+	}
+
+	const queuePayload = await prisma.$transaction(async (tx) => {
+		const order = await tx.posOrder.findFirst({
+			where: {
+				id: orderId,
+				deletedAt: null
+			},
+			select: {
+				id: true,
+				userId: true,
+				finalAmount: true,
+				paymentStatus: true
+			}
+		});
+
+		if (!order) {
+			throw new AppError(404, 'POS order not found', [
+				{ field: 'orderId', message: 'No active POS order found with this id', code: 'POS_ORDER_NOT_FOUND' }
+			]);
+		}
+
+		if (order.userId !== userId) {
+			throw new AppError(403, 'Access denied', [
+				{ field: 'orderId', message: 'You are not allowed to add payments to this bill', code: 'BILL_UPDATE_FORBIDDEN' }
+			]);
+		}
+
+		await ensurePaymentBanksExist(tx, payments);
+
+		const paidAggregate = await tx.globalPayment.aggregate({
+			where: {
+				posOrderId: order.id,
+				deletedAt: null
+			},
+			_sum: {
+				amount: true
+			}
+		});
+
+		const existingPaidAmount = toRoundedMoney(paidAggregate._sum.amount ?? 0);
+		const incomingPaymentTotal = sumPaymentAmounts(payments);
+
+		if (existingPaidAmount >= order.finalAmount) {
+			throw new AppError(400, 'Order is already fully paid', [
+				{ field: 'payments', message: 'No more payments can be added to this order', code: 'ORDER_ALREADY_PAID' }
+			]);
+		}
+
+		if (toRoundedMoney(existingPaidAmount + incomingPaymentTotal) > order.finalAmount) {
+			throw new AppError(400, 'Overpayment is not allowed', [
+				{ field: 'payments', message: 'Total payment amount cannot exceed order final amount', code: 'OVERPAYMENT_NOT_ALLOWED' }
+			]);
+		}
+
+		return {
+			orderId: order.id,
+			payments,
+			existingPaidAmount,
+			incomingPaymentTotal,
+			finalAmount: order.finalAmount,
+			paymentStatus: order.paymentStatus
+		};
+	});
+
+	await posPaymentService.enqueuePayments(queuePayload.orderId, queuePayload.payments);
+
+	return {
+		orderId: queuePayload.orderId,
+		queuedPayments: queuePayload.payments.length,
+		paymentStatus: queuePayload.paymentStatus,
+		finalAmount: queuePayload.finalAmount,
+		totalPaid: queuePayload.existingPaidAmount,
+		incomingAmount: queuePayload.incomingPaymentTotal,
+		dueAmount: toRoundedMoney(queuePayload.finalAmount - queuePayload.existingPaidAmount)
+	};
 };
 
 const deleteBill = async (orderId: string, userId: string) => {
@@ -1324,5 +1714,6 @@ export const posService = {
 	getProducts,
 	createBill,
 	updateBill,
+	addBillPayments,
 	deleteBill
 };

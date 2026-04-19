@@ -108,6 +108,32 @@ const updateBill = async (req: Request, res: Response) => {
 	});
 };
 
+const addBillPayments = async (req: Request, res: Response) => {
+	const userId = req.user?.id;
+	if (!userId) {
+		throw new AppError(401, 'Unauthorized', [
+			{ message: 'Authentication required', code: 'UNAUTHORIZED' }
+		]);
+	}
+
+	const orderId = typeof req.params.orderId === 'string' ? req.params.orderId.trim() : '';
+	if (!orderId) {
+		throw new AppError(400, 'Invalid order id', [
+			{ field: 'orderId', message: 'orderId path param is required', code: 'INVALID_ORDER_ID' }
+		]);
+	}
+
+	const data = await posService.addBillPayments(orderId, userId, req.body as { payments?: unknown });
+
+	sendResponse({
+		res,
+		statusCode: 202,
+		success: true,
+		message: 'POS bill payments queued',
+		data
+	});
+};
+
 const deleteBill = async (req: Request, res: Response) => {
 	const userId = req.user?.id;
 	if (!userId) {
@@ -140,5 +166,6 @@ export const posController = {
 	getProducts,
 	createBill,
 	updateBill,
+	addBillPayments,
 	deleteBill
 };

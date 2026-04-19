@@ -4,6 +4,7 @@ import { logger } from './config/logger.js';
 import { prisma } from './config/prisma.js';
 import './common/services/email.service.js';
 import './modules/order/order-invoice-email.service.js';
+import './modules/pos-payment/pos-payment.service.js';
 
 const server = app.listen(env.port, () => {
   logger.info(`Server running on port ${env.port}`);

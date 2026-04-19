@@ -4,6 +4,20 @@ enum DiscountType {
   NONE
 }
 
+enum PaymentStatus {
+  PENDING
+  PAID
+  DUE
+}
+
+enum PaymentMethod {
+    CASH
+    BANKCARD
+    BKASH
+    NAGAD
+    ROCKET
+}
+
 enum StockStatus {
   IN_STOCK
   LOW_STOCK
