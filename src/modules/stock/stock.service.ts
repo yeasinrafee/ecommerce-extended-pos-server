@@ -367,6 +367,7 @@ const getStockById = async (id: string) => {
 							id: true,
 							name: true,
 							sku: true,
+							image: true,
 							stock: true
 						}
 					}
@@ -457,6 +458,7 @@ const createStock = async (userId: string, payload: CreateStockDto) => {
 								id: true,
 								name: true,
 								sku: true,
+								image: true,
 								stock: true
 							}
 						}
