@@ -90,6 +90,20 @@ const getBills = async ({ page = 1, limit = 10 }: PosBillsListQuery = {}) => {
 				finalAmount: true,
 				paymentStatus: true,
 				createdAt: true,
+				globalPayments: {
+					where: { deletedAt: null },
+					include: {
+						bank: {
+							select: {
+								id: true,
+								bankName: true,
+								branch: true,
+								accountNumber: true
+							}
+						}
+					},
+					orderBy: { createdAt: 'asc' }
+				},
 				user: {
 					select: {
 						id: true,
@@ -118,6 +132,24 @@ const getBills = async ({ page = 1, limit = 10 }: PosBillsListQuery = {}) => {
 			totalQuantity: order.posOrderItems.reduce((sum, item) => sum + item.quantity, 0),
 			totalAmount: order.finalAmount,
 			paymentStatus: order.paymentStatus,
+			payments: order.globalPayments.map((payment) => ({
+				id: payment.id,
+				amount: payment.amount,
+				paymentMethod: payment.paymentMethod,
+				bankId: payment.bankId,
+				bank: payment.bank,
+				createdAt: payment.createdAt,
+				updatedAt: payment.updatedAt
+			})),
+			globalPayments: order.globalPayments.map((payment) => ({
+				id: payment.id,
+				amount: payment.amount,
+				paymentMethod: payment.paymentMethod,
+				bankId: payment.bankId,
+				bank: payment.bank,
+				createdAt: payment.createdAt,
+				updatedAt: payment.updatedAt
+			})),
 			createdAt: order.createdAt,
 			processedBy: {
 				userId: order.user.id,
@@ -731,6 +763,7 @@ const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: strin
 						select: {
 							id: true,
 							bankName: true,
+							branch: true,
 							accountNumber: true
 						}
 					}
@@ -837,6 +870,14 @@ const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: strin
 		createdAt: createdOrder.createdAt,
 		updatedAt: createdOrder.updatedAt,
 		payments: createdOrder.globalPayments.map((payment) => ({
+			id: payment.id,
+			amount: payment.amount,
+			paymentMethod: payment.paymentMethod,
+			bankId: payment.bankId,
+			bank: payment.bank,
+			createdAt: payment.createdAt
+		})),
+		globalPayments: createdOrder.globalPayments.map((payment) => ({
 			id: payment.id,
 			amount: payment.amount,
 			paymentMethod: payment.paymentMethod,

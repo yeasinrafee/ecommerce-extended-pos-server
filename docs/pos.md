@@ -148,6 +148,39 @@ Status: `200`
 			"invoiceNumber": "000123456789",
 			"totalQuantity": 8,
 			"totalAmount": 148,
+			"paymentStatus": "PAID",
+			"payments": [
+				{
+					"id": "payment_1",
+					"amount": 148,
+					"paymentMethod": "BANKCARD",
+					"bankId": "bank_1",
+					"bank": {
+						"id": "bank_1",
+						"bankName": "Dutch-Bangla Bank",
+						"branch": "Dhanmondi",
+						"accountNumber": "1234567890"
+					},
+					"createdAt": "2026-04-18T10:25:00.000Z",
+					"updatedAt": "2026-04-18T10:25:00.000Z"
+				}
+			],
+			"globalPayments": [
+				{
+					"id": "payment_1",
+					"amount": 148,
+					"paymentMethod": "BANKCARD",
+					"bankId": "bank_1",
+					"bank": {
+						"id": "bank_1",
+						"bankName": "Dutch-Bangla Bank",
+						"branch": "Dhanmondi",
+						"accountNumber": "1234567890"
+					},
+					"createdAt": "2026-04-18T10:25:00.000Z",
+					"updatedAt": "2026-04-18T10:25:00.000Z"
+				}
+			],
 			"createdAt": "2026-04-18T10:20:00.000Z",
 			"processedBy": {
 				"userId": "user_1",
@@ -171,6 +204,8 @@ Status: `200`
 - `totalQuantity` is the sum of active (`deletedAt: null`) order item quantities.
 - `processedBy.userId` comes from `PosOrder.userId`.
 - `processedBy.adminName` comes from the related admin profile (`User -> Admin`) and can be `null`.
+- `payments` and `globalPayments` are attached from `GlobalPayment` rows when available.
+- Each payment includes its related `bank` record when `bankId` is present.
 
 ---
 
@@ -205,6 +240,9 @@ Status: `200`
 		"id": "pos_order_1",
 		"invoiceNumber": "000123456789",
 		"storeId": "store_1",
+		"paymentStatus": "PAID",
+		"orderDiscountType": "PERCENTAGE_DISCOUNT",
+		"orderDiscountValue": 10,
 		"store": {
 			"id": "store_1",
 			"name": "Main Store",
@@ -355,6 +393,7 @@ Status: `201`
 		"createdAt": "2026-04-18T10:20:00.000Z",
 		"updatedAt": "2026-04-18T10:20:00.000Z",
 		"payments": [],
+		"globalPayments": [],
 		"items": [
 			{
 				"id": "pos_item_1",
@@ -466,6 +505,7 @@ Status: `400`
 - The returned cashier name is pulled from the authenticated user's admin profile when available.
 - `cashier.id` and `cashier.email` come from the authenticated `User` record.
 - `cashier.name` comes from the related `Admin` record (`admins[0].name`) and can be `null` when no admin profile exists.
+- `payments` and `globalPayments` are included when payment records exist for the order.
 
 ---
 
