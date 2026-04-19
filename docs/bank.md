@@ -1,5 +1,12 @@
 ## GET /api/banks/get-all
 
+### Query
+```json
+{
+	"searchTerm": "dutch"
+}
+```
+
 ### Response Body
 ```json
 {

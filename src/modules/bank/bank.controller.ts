@@ -38,7 +38,8 @@ const updateBankBodySchema = z.object({
 const getIdParam = (value: string | string[] | undefined) => String(Array.isArray(value) ? value[0] : value);
 
 const getAllBanks = async (req: Request, res: Response) => {
-	const data = await bankService.getAllBanks();
+	const searchTerm = typeof req.query.searchTerm === 'string' ? req.query.searchTerm.trim() : undefined;
+	const data = await bankService.getAllBanks(searchTerm || undefined);
 
 	sendResponse({
 		res,

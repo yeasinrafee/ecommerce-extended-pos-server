@@ -46,10 +46,18 @@ const assertUniqueBank = async (
 	}
 };
 
-const getAllBanks = async () => {
+const getAllBanks = async (searchTerm?: string) => {
 	return prisma.bank.findMany({
 		where: {
-			deletedAt: null
+			deletedAt: null,
+			...(searchTerm
+				? {
+					OR: [
+						{ bankName: { contains: searchTerm, mode: 'insensitive' } },
+						{ accountNumber: { contains: searchTerm, mode: 'insensitive' } }
+					]
+				}
+				: {})
 		},
 		orderBy: {
 			createdAt: 'desc'
