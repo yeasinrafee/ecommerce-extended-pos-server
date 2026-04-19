@@ -274,13 +274,13 @@ Status: `200`
 
 ### Request
 
-The endpoint accepts multiple JSON body shapes. Use one of the supported formats below.
-
-#### Format A: `products` array
+The endpoint still accepts all previous product-line formats (`products`, `productIds`, or single `productId`) and now also accepts order-level discount and optional payment queue payload.
 
 ```json
 {
 	"storeId": "store_1",
+	"discountType": "PERCENTAGE_DISCOUNT",
+	"discountValue": 10,
 	"products": [
 		{
 			"productId": "prod_1",
@@ -291,76 +291,33 @@ The endpoint accepts multiple JSON body shapes. Use one of the supported formats
 			"productId": "prod_2",
 			"quantity": 1
 		}
-	]
-}
-```
-
-#### Format A1: same product with different variation quantities
-
-```json
-{
-	"storeId": "store_1",
-	"products": [
+	],
+	"payments": [
 		{
-			"productId": "prod_A",
-			"variationIds": ["var_red", "var_blue"],
-			"variationQuantities": [3, 5]
+			"amount": 300,
+			"paymentMethod": "BANKCARD",
+			"bankId": "bank_1"
+		},
+		{
+			"amount": 50,
+			"paymentMethod": "CASH"
 		}
 	]
-}
-```
-
-In this example:
-- `var_red` is ordered with quantity `3`.
-- `var_blue` is ordered with quantity `5`.
-- The API normalizes this into separate internal lines and persists them correctly in the order items.
-
-#### Format B: single product fields
-
-```json
-{
-	"storeId": "store_1",
-	"productId": "prod_1",
-	"quantity": 2,
-	"variationId": "var_1"
-}
-```
-
-#### Format C: multiple products with parallel arrays
-
-```json
-{
-	"storeId": "store_1",
-	"productIds": ["prod_1", "prod_2"],
-	"quantities": [2, 1],
-	"variationIds": ["var_1", "var_3"]
-}
-```
-
-#### Format D: multiple products with per-line variation quantities
-
-```json
-{
-	"storeId": "store_1",
-	"productIds": ["prod_1"],
-	"variationIds": ["var_1", "var_2"],
-	"variationQuantities": [1, 2]
 }
 ```
 
 ### Request Field Rules
 
 - `storeId` is optional.
-- One of these must be provided:
-	- `products`
-	- `productIds`
-	- `productId`
-- `quantity` or `quantities` must be positive integers when required by the format.
-- `variationIds` can be used with either a single product or multiple products.
-- If a line includes `variationIds`, it must also include `variationQuantities` with the same number of entries.
-- `variationQuantities` must match the number of `variationIds` when used as a per-variation payload.
-- If no variation is provided for a line, use only `quantity` for that product line.
-- If `storeId` is omitted, the bill is still created, but store-level stock validation and store stock decrement are skipped.
+- Product lines are required, using one of the supported shapes (`products`, `productIds`, or single-product fields).
+- `discountType` is optional: `PERCENTAGE_DISCOUNT`, `FLAT_DISCOUNT`, or `NONE`.
+- `discountValue` is used only for `PERCENTAGE_DISCOUNT` or `FLAT_DISCOUNT`.
+- If `discountType` is `PERCENTAGE_DISCOUNT`, `discountValue` cannot exceed `100`.
+- `payments` is optional and is processed asynchronously through queue.
+- Payment rules:
+	- If `paymentMethod` is `BANKCARD`, `bankId` is required.
+	- If `paymentMethod` is not `BANKCARD`, `bankId` must not be provided.
+- Overpayment is rejected (`existing + incoming` cannot exceed `finalAmount`).
 
 ### Success Response
 
@@ -374,6 +331,9 @@ Status: `201`
 		"id": "pos_order_1",
 		"invoiceNumber": "000123456789",
 		"storeId": "store_1",
+		"paymentStatus": "PENDING",
+		"orderDiscountType": "PERCENTAGE_DISCOUNT",
+		"orderDiscountValue": 10,
 		"store": {
 			"id": "store_1",
 			"name": "Main Store",
@@ -389,9 +349,12 @@ Status: `201`
 			"name": "Cashier One"
 		},
 		"baseAmount": 40,
-		"finalAmount": 37,
+		"finalAmount": 33.3,
+		"totalPaid": 0,
+		"dueAmount": 33.3,
 		"createdAt": "2026-04-18T10:20:00.000Z",
 		"updatedAt": "2026-04-18T10:20:00.000Z",
+		"payments": [],
 		"items": [
 			{
 				"id": "pos_item_1",
@@ -498,6 +461,8 @@ Status: `400`
 - Invoice numbers are generated server-side.
 - Product and store stock are checked before the bill is created.
 - Product variation pricing is used when variations are provided.
+- Order-level discount is applied on subtotal (`lineFinalTotal` sum) to calculate order `finalAmount`.
+- `payments` sent in create request are queued and handled in background; they are not synchronously written inside the create transaction.
 - The returned cashier name is pulled from the authenticated user's admin profile when available.
 - `cashier.id` and `cashier.email` come from the authenticated `User` record.
 - `cashier.name` comes from the related `Admin` record (`admins[0].name`) and can be `null` when no admin profile exists.
@@ -513,12 +478,14 @@ Status: `400`
 
 ### Purpose
 
-Use this endpoint to update an existing POS bill by replacing product lines. It supports:
+Use this endpoint to replace product lines and optionally update order-level discount or enqueue new payments. It supports:
 
 - adding new products
 - removing existing products
 - changing quantities
 - changing selected variations
+- changing order-level discount (`discountType` + `discountValue`)
+- queueing additional payment records
 
 ### Request
 
@@ -526,13 +493,15 @@ Path param:
 
 - `orderId` (required): POS order id to update
 
-Body format is the same as create bill formats (`products`, `productIds`, or single product fields).
+Body format is the same as create bill formats with optional `discountType`, `discountValue`, and `payments`.
 
 Example:
 
 ```json
 {
 	"storeId": "store_1",
+	"discountType": "FLAT_DISCOUNT",
+	"discountValue": 20,
 	"products": [
 		{
 			"productId": "prod_1",
@@ -542,6 +511,13 @@ Example:
 		{
 			"productId": "prod_2",
 			"quantity": 2
+		}
+	],
+	"payments": [
+		{
+			"amount": 200,
+			"paymentMethod": "BANKCARD",
+			"bankId": "bank_1"
 		}
 	]
 }
@@ -557,7 +533,8 @@ The update runs in a single DB transaction and does all of the following safely:
 - decrements product stock again based on updated items
 - decrements store stock again (when updated bill has a store)
 - deletes old order items/variations and inserts the updated items
-- recalculates and persists `baseAmount` and `finalAmount`
+- recalculates and persists `baseAmount`, `finalAmount`, `orderDiscountType`, and `orderDiscountValue`
+- validates overpayment against existing paid amount and newly queued payments
 
 ### Success Response
 
@@ -571,6 +548,9 @@ Status: `200`
 		"id": "pos_order_1",
 		"invoiceNumber": "000123456789",
 		"storeId": "store_1",
+		"paymentStatus": "DUE",
+		"orderDiscountType": "FLAT_DISCOUNT",
+		"orderDiscountValue": 20,
 		"store": {
 			"id": "store_1",
 			"name": "Main Store",
@@ -586,9 +566,21 @@ Status: `200`
 			"name": "Cashier One"
 		},
 		"baseAmount": 160,
-		"finalAmount": 148,
+		"finalAmount": 128,
+		"totalPaid": 40,
+		"dueAmount": 88,
 		"createdAt": "2026-04-18T10:20:00.000Z",
 		"updatedAt": "2026-04-18T10:40:00.000Z",
+		"payments": [
+			{
+				"id": "payment_1",
+				"amount": 40,
+				"paymentMethod": "CASH",
+				"bankId": null,
+				"bank": null,
+				"createdAt": "2026-04-18T10:30:00.000Z"
+			}
+		],
 		"items": [
 			{
 				"id": "pos_item_2",
@@ -629,6 +621,10 @@ Status: `200`
 - `BILL_UPDATE_FORBIDDEN`: authenticated user is not owner of the bill
 - `PRODUCT_NOT_FOUND`, `VARIATION_NOT_FOUND`, `VARIATION_PRODUCT_MISMATCH`
 - `INSUFFICIENT_PRODUCT_STOCK`, `INSUFFICIENT_STORE_STOCK`
+- `INVALID_DISCOUNT_TYPE`, `INVALID_DISCOUNT_VALUE`
+- `BANK_ID_REQUIRED` when method is `BANKCARD` without bank id
+- `BANK_ID_NOT_ALLOWED` when method is not `BANKCARD` but bank id is sent
+- `OVERPAYMENT_NOT_ALLOWED` when existing paid + incoming payments exceed final amount
 
 ---
 
