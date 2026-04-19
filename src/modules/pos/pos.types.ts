@@ -1,4 +1,5 @@
 import type { DiscountType, PaymentMethod } from '@prisma/client';
+import type { PaymentStatus } from '@prisma/client';
 
 export type PosProductsQuery = {
 	storeId?: string;
@@ -8,6 +9,7 @@ export type PosProductsQuery = {
 export type PosBillsListQuery = {
 	page?: number;
 	limit?: number;
+	paymentStatus?: PaymentStatus;
 };
 
 export type PosVariationLineInput = {

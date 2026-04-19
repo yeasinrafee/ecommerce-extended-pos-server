@@ -1,4 +1,5 @@
 import type { Request, Response } from 'express';
+import { PaymentStatus } from '@prisma/client';
 import { AppError } from '../../common/errors/app-error.js';
 import { sendResponse } from '../../common/utils/send-response.js';
 import { posService } from './pos.service.js';
@@ -7,8 +8,12 @@ import type { CreatePosBillInput, UpdatePosBillInput } from './pos.types.js';
 const getBills = async (req: Request, res: Response) => {
 	const page = Math.max(1, Number(req.query.page ?? 1));
 	const limit = Math.max(1, Number(req.query.limit ?? 10));
+	const paymentStatusValue = typeof req.query.paymentStatus === 'string' ? req.query.paymentStatus.trim().toUpperCase() : '';
+	const paymentStatus = Object.values(PaymentStatus).includes(paymentStatusValue as PaymentStatus)
+		? (paymentStatusValue as PaymentStatus)
+		: undefined;
 
-	const result = await posService.getBills({ page, limit });
+	const result = await posService.getBills({ page, limit, paymentStatus });
 
 	sendResponse({
 		res,

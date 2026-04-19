@@ -72,10 +72,11 @@ const getProducts = async ({ storeId, searchTerm }: PosProductsQuery = {}) => {
 	return products.map(transformPosProduct);
 };
 
-const getBills = async ({ page = 1, limit = 10 }: PosBillsListQuery = {}) => {
+const getBills = async ({ page = 1, limit = 10, paymentStatus }: PosBillsListQuery = {}) => {
 	const skip = (page - 1) * limit;
 	const where: Prisma.PosOrderWhereInput = {
-		deletedAt: null
+		deletedAt: null,
+		...(paymentStatus ? { paymentStatus } : {})
 	};
 
 	const [orders, total] = await Promise.all([
