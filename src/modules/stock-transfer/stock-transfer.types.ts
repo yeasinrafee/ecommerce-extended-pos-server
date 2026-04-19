@@ -36,6 +36,7 @@ export type StockTransferProductSearchResult = {
 	stock: number;
 	availableQuantity: number;
 	purchasePrice: number;
+	image?: string | null;
 };
 
 export type ServiceListResult<T> = {

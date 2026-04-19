@@ -273,7 +273,8 @@ const getStoreProductSearchResults = async (
 			id: true,
 			name: true,
 			sku: true,
-			stock: true
+			stock: true,
+			image: true
 		},
 		orderBy: {
 			createdAt: 'desc'
@@ -297,7 +298,8 @@ const getStoreProductSearchResults = async (
 				sku: product.sku,
 				stock: product.stock,
 				availableQuantity,
-				purchasePrice: availability.purchasePriceByProductId.get(product.id) ?? 0
+				purchasePrice: availability.purchasePriceByProductId.get(product.id) ?? 0,
+				image: product.image ?? null
 			};
 		})
 		.filter((item): item is StockTransferProductSearchResult => item !== null);
