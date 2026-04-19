@@ -5,6 +5,7 @@ model PosOrder {
     invoiceNumber  String          @unique
     baseAmount     Float
     finalAmount    Float
+    paidAmount     Float           @default(0)
     orderDiscountType DiscountType @default(NONE)
     orderDiscountValue Float       @default(0)
     createdAt      DateTime        @default(now())

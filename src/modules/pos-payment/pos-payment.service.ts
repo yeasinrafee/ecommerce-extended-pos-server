@@ -1,5 +1,5 @@
 import type { Job } from 'bullmq';
-import { PaymentMethod, PaymentStatus } from '@prisma/client';
+import { PaymentMethod, PaymentStatus, Prisma } from '@prisma/client';
 import { createQueue, createWorker } from '../../common/services/mq.service.js';
 import { prisma } from '../../config/prisma.js';
 import type { PosPaymentJobData, PosPaymentJobLine, PosPaymentStatusJobData } from './pos-payment.types.js';
@@ -67,6 +67,20 @@ const getPaidAmount = async (orderId: string) => {
 	return roundMoney(paidAggregate._sum.amount ?? 0);
 };
 
+const getPaidAmountTx = async (tx: Prisma.TransactionClient, orderId: string) => {
+	const paidAggregate = await tx.globalPayment.aggregate({
+		where: {
+			posOrderId: orderId,
+			deletedAt: null
+		},
+		_sum: {
+			amount: true
+		}
+	});
+
+	return roundMoney(paidAggregate._sum.amount ?? 0);
+};
+
 const recalculatePaymentStatus = async (orderId: string) => {
 	await prisma.$transaction(async (tx) => {
 		const order = await tx.posOrder.findFirst({
@@ -76,7 +90,8 @@ const recalculatePaymentStatus = async (orderId: string) => {
 			},
 			select: {
 				id: true,
-				finalAmount: true
+				finalAmount: true,
+				paidAmount: true
 			}
 		});
 
@@ -84,12 +99,13 @@ const recalculatePaymentStatus = async (orderId: string) => {
 			throw new Error('POS order not found for payment status recalculation');
 		}
 
-		const paidAmount = await getPaidAmount(order.id);
+		const paidAmount = await getPaidAmountTx(tx, order.id);
 		const paymentStatus = resolvePaymentStatus(order.finalAmount, paidAmount);
 
 		await tx.posOrder.update({
 			where: { id: order.id },
 			data: {
+				paidAmount,
 				paymentStatus
 			}
 		});
@@ -111,7 +127,8 @@ const processPayments = async (orderId: string, payments: PosPaymentJobLine[]) =
 			},
 			select: {
 				id: true,
-				finalAmount: true
+				finalAmount: true,
+				paidAmount: true
 			}
 		});
 
@@ -165,6 +182,7 @@ const processPayments = async (orderId: string, payments: PosPaymentJobLine[]) =
 		await tx.posOrder.update({
 			where: { id: order.id },
 			data: {
+				paidAmount: paidAfter,
 				paymentStatus: resolvePaymentStatus(order.finalAmount, paidAfter)
 			}
 		});
@@ -176,10 +194,8 @@ export const posPaymentQueue = createQueue('pos_payment_queue', { verify: true }
 export const posPaymentWorker = createWorker(
 	'pos_payment_queue',
 	async (job: Job) => {
-		if (job.name !== 'process_pos_order_payments') {
-			if (job.name !== 'recalculate_pos_order_payment_status') {
+		if (job.name !== 'process_pos_order_payments' && job.name !== 'recalculate_pos_order_payment_status') {
 			return;
-			}
 		}
 
 		if (job.name === 'process_pos_order_payments') {

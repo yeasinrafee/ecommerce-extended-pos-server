@@ -88,6 +88,7 @@ const getBills = async ({ page = 1, limit = 10 }: PosBillsListQuery = {}) => {
 				id: true,
 				invoiceNumber: true,
 				finalAmount: true,
+				paidAmount: true,
 				paymentStatus: true,
 				createdAt: true,
 				globalPayments: {
@@ -131,6 +132,7 @@ const getBills = async ({ page = 1, limit = 10 }: PosBillsListQuery = {}) => {
 			invoiceNumber: order.invoiceNumber,
 			totalQuantity: order.posOrderItems.reduce((sum, item) => sum + item.quantity, 0),
 			totalAmount: order.finalAmount,
+			paidAmount: order.paidAmount,
 			paymentStatus: order.paymentStatus,
 			payments: order.globalPayments.map((payment) => ({
 				id: payment.id,
@@ -754,51 +756,20 @@ const incrementStoreStockProducts = async (
 const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: string, userId?: string) => {
 	const createdOrder = await tx.posOrder.findUnique({
 		where: { id: orderId },
-		include: {
-			store: true,
-			globalPayments: {
-				where: { deletedAt: null },
-				include: {
-					bank: {
-						select: {
-							id: true,
-							bankName: true,
-							branch: true,
-							accountNumber: true
-						}
-					}
-				},
-				orderBy: { createdAt: 'asc' }
-			},
-			posOrderItems: {
-				where: { deletedAt: null },
-				include: {
-					product: {
-						select: {
-							id: true,
-							name: true,
-							image: true,
-							sku: true
-						}
-					},
-					variations: {
-						where: { deletedAt: null },
-						include: {
-							productVariation: {
-								include: {
-									attribute: {
-										select: {
-											id: true,
-											name: true
-										}
-									}
-								}
-							}
-						}
-					}
-				},
-				orderBy: { createdAt: 'asc' }
-			}
+		select: {
+			id: true,
+			invoiceNumber: true,
+			storeId: true,
+			baseAmount: true,
+			finalAmount: true,
+			paidAmount: true,
+			paymentStatus: true,
+			orderDiscountType: true,
+			orderDiscountValue: true,
+			createdAt: true,
+			updatedAt: true,
+			deletedAt: true,
+			userId: true
 		}
 	});
 
@@ -807,6 +778,72 @@ const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: strin
 			{ field: 'order', message: 'Could not load POS order', code: 'POS_ORDER_FETCH_FAILED' }
 		]);
 	}
+
+	const [store, globalPayments, posOrderItems] = await Promise.all([
+		createdOrder.storeId
+			? tx.store.findUnique({
+				where: { id: createdOrder.storeId },
+				select: {
+					id: true,
+					name: true,
+					address: true,
+					status: true,
+					createdAt: true,
+					updatedAt: true,
+					deletedAt: true
+				}
+			})
+			: Promise.resolve(null),
+		tx.globalPayment.findMany({
+			where: {
+				posOrderId: createdOrder.id,
+				deletedAt: null
+			},
+			include: {
+				bank: {
+					select: {
+						id: true,
+						bankName: true,
+						branch: true,
+						accountNumber: true
+					}
+				}
+			},
+			orderBy: { createdAt: 'asc' }
+		}),
+		tx.posOrderItem.findMany({
+			where: {
+				posOrderId: createdOrder.id,
+				deletedAt: null
+			},
+			include: {
+				product: {
+					select: {
+						id: true,
+						name: true,
+						image: true,
+						sku: true
+					}
+				},
+				variations: {
+					where: { deletedAt: null },
+					include: {
+						productVariation: {
+							include: {
+								attribute: {
+									select: {
+										id: true,
+										name: true
+									}
+								}
+							}
+						}
+					}
+				}
+			},
+			orderBy: { createdAt: 'asc' }
+		})
+	]);
 
 	const cashierUser = await tx.user.findUnique({
 		where: { id: userId ?? createdOrder.userId },
@@ -820,7 +857,7 @@ const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: strin
 		}
 	});
 
-	const items = createdOrder.posOrderItems.map((item) => {
+	const items = posOrderItems.map((item) => {
 		const lineBaseTotal = Number((item.Baseprice * item.quantity).toFixed(2));
 		const lineFinalTotal = Number((item.finalPrice * item.quantity).toFixed(2));
 
@@ -847,14 +884,14 @@ const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: strin
 	});
 
 	const totalQuantity = items.reduce((sum, item) => sum + item.quantity, 0);
-	const totalPaid = toRoundedMoney(createdOrder.globalPayments.reduce((sum, payment) => sum + payment.amount, 0));
+	const totalPaid = toRoundedMoney(createdOrder.paidAmount);
 	const dueAmount = Math.max(0, toRoundedMoney(createdOrder.finalAmount - totalPaid));
 
 	return {
 		id: createdOrder.id,
 		invoiceNumber: createdOrder.invoiceNumber,
 		storeId: createdOrder.storeId,
-		store: createdOrder.store,
+		store,
 		paymentStatus: createdOrder.paymentStatus,
 		orderDiscountType: createdOrder.orderDiscountType,
 		orderDiscountValue: createdOrder.orderDiscountValue,
@@ -865,11 +902,12 @@ const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: strin
 		},
 		baseAmount: createdOrder.baseAmount,
 		finalAmount: createdOrder.finalAmount,
+		paidAmount: createdOrder.paidAmount,
 		totalPaid,
 		dueAmount,
 		createdAt: createdOrder.createdAt,
 		updatedAt: createdOrder.updatedAt,
-		payments: createdOrder.globalPayments.map((payment) => ({
+		payments: globalPayments.map((payment) => ({
 			id: payment.id,
 			amount: payment.amount,
 			paymentMethod: payment.paymentMethod,
@@ -877,7 +915,7 @@ const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: strin
 			bank: payment.bank,
 			createdAt: payment.createdAt
 		})),
-		globalPayments: createdOrder.globalPayments.map((payment) => ({
+		globalPayments: globalPayments.map((payment) => ({
 			id: payment.id,
 			amount: payment.amount,
 			paymentMethod: payment.paymentMethod,
@@ -1109,6 +1147,7 @@ const createBill = async (userId: string, payload: CreatePosBillInput) => {
 						invoiceNumber,
 						baseAmount,
 						finalAmount,
+						paidAmount: 0,
 						orderDiscountType: normalized.orderDiscount.discountType,
 						orderDiscountValue: normalized.orderDiscount.discountValue,
 						paymentStatus: resolvePaymentStatusFromAmounts(finalAmount, 0)
@@ -1548,6 +1587,7 @@ const updateBill = async (orderId: string, userId: string, payload: UpdatePosBil
 				storeId: normalized.storeId,
 				baseAmount,
 				finalAmount,
+				paidAmount: existingPaidAmount,
 				orderDiscountType: normalized.orderDiscount.discountType,
 				orderDiscountValue: normalized.orderDiscount.discountValue,
 				paymentStatus: resolvePaymentStatusFromAmounts(finalAmount, existingPaidAmount)
@@ -1589,6 +1629,7 @@ const addBillPayments = async (orderId: string, userId: string, payload: { payme
 				id: true,
 				userId: true,
 				finalAmount: true,
+				paidAmount: true,
 				paymentStatus: true
 			}
 		});
@@ -1638,6 +1679,7 @@ const addBillPayments = async (orderId: string, userId: string, payload: { payme
 			existingPaidAmount,
 			incomingPaymentTotal,
 			finalAmount: order.finalAmount,
+			paidAmount: order.paidAmount,
 			paymentStatus: order.paymentStatus
 		};
 	});
@@ -1726,6 +1768,7 @@ const deleteBill = async (orderId: string, userId: string) => {
 				userId: true,
 				storeId: true,
 				invoiceNumber: true,
+				paidAmount: true,
 				posOrderItems: {
 					where: { deletedAt: null },
 					select: {
