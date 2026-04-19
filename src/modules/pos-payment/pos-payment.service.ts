@@ -2,7 +2,7 @@ import type { Job } from 'bullmq';
 import { PaymentMethod, PaymentStatus } from '@prisma/client';
 import { createQueue, createWorker } from '../../common/services/mq.service.js';
 import { prisma } from '../../config/prisma.js';
-import type { PosPaymentJobData, PosPaymentJobLine } from './pos-payment.types.js';
+import type { PosPaymentJobData, PosPaymentJobLine, PosPaymentStatusJobData } from './pos-payment.types.js';
 
 const roundMoney = (value: number) => Number(value.toFixed(2));
 
@@ -65,6 +65,35 @@ const getPaidAmount = async (orderId: string) => {
 	});
 
 	return roundMoney(paidAggregate._sum.amount ?? 0);
+};
+
+const recalculatePaymentStatus = async (orderId: string) => {
+	await prisma.$transaction(async (tx) => {
+		const order = await tx.posOrder.findFirst({
+			where: {
+				id: orderId,
+				deletedAt: null
+			},
+			select: {
+				id: true,
+				finalAmount: true
+			}
+		});
+
+		if (!order) {
+			throw new Error('POS order not found for payment status recalculation');
+		}
+
+		const paidAmount = await getPaidAmount(order.id);
+		const paymentStatus = resolvePaymentStatus(order.finalAmount, paidAmount);
+
+		await tx.posOrder.update({
+			where: { id: order.id },
+			data: {
+				paymentStatus
+			}
+		});
+	});
 };
 
 const processPayments = async (orderId: string, payments: PosPaymentJobLine[]) => {
@@ -148,11 +177,19 @@ export const posPaymentWorker = createWorker(
 	'pos_payment_queue',
 	async (job: Job) => {
 		if (job.name !== 'process_pos_order_payments') {
+			if (job.name !== 'recalculate_pos_order_payment_status') {
+			return;
+			}
+		}
+
+		if (job.name === 'process_pos_order_payments') {
+			const data = job.data as PosPaymentJobData;
+			await processPayments(data.orderId, data.payments);
 			return;
 		}
 
-		const data = job.data as PosPaymentJobData;
-		await processPayments(data.orderId, data.payments);
+		const data = job.data as PosPaymentStatusJobData;
+		await recalculatePaymentStatus(data.orderId);
 	},
 	1,
 	{ verify: true }
@@ -169,7 +206,14 @@ const enqueuePayments = async (orderId: string, payments: PosPaymentJobLine[]) =
 	});
 };
 
+const enqueuePaymentStatusRecalculation = async (orderId: string) => {
+	await posPaymentQueue.add('recalculate_pos_order_payment_status', {
+		orderId
+	});
+};
+
 export const posPaymentService = {
 	enqueuePayments,
+	enqueuePaymentStatusRecalculation,
 	getPaidAmount
 };

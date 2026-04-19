@@ -10,3 +10,7 @@ export type PosPaymentJobData = {
 	orderId: string;
 	payments: PosPaymentJobLine[];
 };
+
+export type PosPaymentStatusJobData = {
+	orderId: string;
+};

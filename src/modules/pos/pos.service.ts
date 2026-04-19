@@ -1655,6 +1655,65 @@ const addBillPayments = async (orderId: string, userId: string, payload: { payme
 	};
 };
 
+const deleteBillPayment = async (orderId: string, paymentId: string, userId: string) => {
+	const deletedPayment = await prisma.$transaction(async (tx) => {
+		const order = await tx.posOrder.findFirst({
+			where: {
+				id: orderId,
+				deletedAt: null
+			},
+			select: {
+				id: true,
+				userId: true
+			}
+		});
+
+		if (!order) {
+			throw new AppError(404, 'POS order not found', [
+				{ field: 'orderId', message: 'No active POS order found with this id', code: 'POS_ORDER_NOT_FOUND' }
+			]);
+		}
+
+		if (order.userId !== userId) {
+			throw new AppError(403, 'Access denied', [
+				{ field: 'orderId', message: 'You are not allowed to delete payment records for this bill', code: 'BILL_UPDATE_FORBIDDEN' }
+			]);
+		}
+
+		const payment = await tx.globalPayment.findFirst({
+			where: {
+				id: paymentId,
+				posOrderId: order.id,
+				deletedAt: null
+			},
+			select: {
+				id: true,
+				amount: true,
+				paymentMethod: true,
+				bankId: true,
+				createdAt: true,
+				updatedAt: true
+			}
+		});
+
+		if (!payment) {
+			throw new AppError(404, 'Payment not found', [
+				{ field: 'paymentId', message: 'No active payment record found for this order', code: 'PAYMENT_NOT_FOUND' }
+			]);
+		}
+
+		await tx.globalPayment.delete({
+			where: { id: payment.id }
+		});
+
+		return payment;
+	});
+
+	void posPaymentService.enqueuePaymentStatusRecalculation(orderId).catch(() => undefined);
+
+	return deletedPayment;
+};
+
 const deleteBill = async (orderId: string, userId: string) => {
 	return prisma.$transaction(async (tx) => {
 		const existingOrder = await tx.posOrder.findFirst({
@@ -1756,5 +1815,6 @@ export const posService = {
 	createBill,
 	updateBill,
 	addBillPayments,
+	deleteBillPayment,
 	deleteBill
 };

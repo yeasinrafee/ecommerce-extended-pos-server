@@ -719,3 +719,58 @@ Status: `200`
 
 - `POS_ORDER_NOT_FOUND`: order id does not exist or is already soft-deleted
 - `BILL_DELETE_FORBIDDEN`: authenticated user is not owner of the bill
+
+---
+
+## 7. Delete POS Payment
+
+- **Method:** `DELETE`
+- **URL:** `/api/pos/bill/:orderId/payments/:paymentId/delete`
+- **Auth:** Required
+- **Auth Source:** HTTP-only `accessToken` cookie
+
+### Purpose
+
+Hard-delete a single payment record from an order and recalculate the order payment status in the background.
+
+### Request
+
+Path params:
+
+- `orderId` (required): POS order id
+- `paymentId` (required): payment record id to delete
+
+No request body required.
+
+### Success Response
+
+Status: `200`
+
+```json
+{
+	"success": true,
+	"message": "POS payment deleted",
+	"data": {
+		"id": "payment_1",
+		"amount": 148,
+		"paymentMethod": "BANKCARD",
+		"bankId": "bank_1",
+		"createdAt": "2026-04-18T10:25:00.000Z",
+		"updatedAt": "2026-04-18T10:25:00.000Z"
+	},
+	"errors": [],
+	"meta": {}
+}
+```
+
+### Behavior
+
+- The payment row is permanently deleted from `GlobalPayment`.
+- The order payment status is recalculated in the background using BullMQ.
+- Bank data is not returned by this endpoint because the row is deleted before the response is sent.
+
+### Error Cases
+
+- `POS_ORDER_NOT_FOUND`: order id does not exist or is deleted
+- `BILL_UPDATE_FORBIDDEN`: authenticated user is not owner of the bill
+- `PAYMENT_NOT_FOUND`: payment id does not exist for the given order

@@ -134,6 +134,39 @@ const addBillPayments = async (req: Request, res: Response) => {
 	});
 };
 
+const deleteBillPayment = async (req: Request, res: Response) => {
+	const userId = req.user?.id;
+	if (!userId) {
+		throw new AppError(401, 'Unauthorized', [
+			{ message: 'Authentication required', code: 'UNAUTHORIZED' }
+		]);
+	}
+
+	const orderId = typeof req.params.orderId === 'string' ? req.params.orderId.trim() : '';
+	if (!orderId) {
+		throw new AppError(400, 'Invalid order id', [
+			{ field: 'orderId', message: 'orderId path param is required', code: 'INVALID_ORDER_ID' }
+		]);
+	}
+
+	const paymentId = typeof req.params.paymentId === 'string' ? req.params.paymentId.trim() : '';
+	if (!paymentId) {
+		throw new AppError(400, 'Invalid payment id', [
+			{ field: 'paymentId', message: 'paymentId path param is required', code: 'INVALID_PAYMENT_ID' }
+		]);
+	}
+
+	const data = await posService.deleteBillPayment(orderId, paymentId, userId);
+
+	sendResponse({
+		res,
+		statusCode: 200,
+		success: true,
+		message: 'POS payment deleted',
+		data
+	});
+};
+
 const deleteBill = async (req: Request, res: Response) => {
 	const userId = req.user?.id;
 	if (!userId) {
@@ -167,5 +200,6 @@ export const posController = {
 	createBill,
 	updateBill,
 	addBillPayments,
+	deleteBillPayment,
 	deleteBill
 };
