@@ -11,6 +11,7 @@ model PosOrder {
     storeId       String?
     store         Store?         @relation(fields: [storeId], references: [id])
     posOrderItems PosOrderItem[]
+    globalPayments GlobalPayment[]
 }
 
 model PosOrderItem {

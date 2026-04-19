@@ -1,0 +1,33 @@
+model Bank {
+    id             String          @id @default(uuid())
+    bankName       String
+    branch         String
+    accountNumber  String
+    globalPayments GlobalPayment[]
+    createdAt      DateTime        @default(now())
+    updatedAt      DateTime        @updatedAt
+    deletedAt      DateTime?
+}
+
+model GlobalPayment {
+    id            String        @id @default(uuid())
+    amount        Float
+    paymentMethod PaymentMethod
+    bankId        String?
+    bank          Bank?         @relation(fields: [bankId], references: [id])
+    posOrderId    String
+    posOrder      PosOrder     @relation(fields: [posOrderId], references: [id])
+    createdAt     DateTime      @default(now())
+    updatedAt     DateTime      @updatedAt
+    deletedAt     DateTime?
+
+    @@index([posOrderId])
+}
+
+enum PaymentMethod {
+    CASH
+    BANKCARD
+    BKASH
+    NAGAD
+    ROCKET
+}
