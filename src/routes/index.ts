@@ -28,6 +28,7 @@ import { supplierRoutes } from '../modules/supplier/supplier.route.js';
 import { stockRoutes } from '../modules/stock/stock.route.js';
 import { stockTransferRoutes } from '../modules/stock-transfer/stock-transfer.route.js';
 import { posRoutes } from '../modules/pos/pos.route.js';
+import { bankRoutes } from '../modules/bank/bank.route.js';
 const router = Router();
 
 router.use('/products', productRoutes);
@@ -58,6 +59,7 @@ router.use('/suppliers', supplierRoutes);
 router.use('/stocks', stockRoutes);
 router.use('/stock-transfers', stockTransferRoutes);
 router.use('/pos', posRoutes);
+router.use('/banks', bankRoutes);
 
 router.use('/dashboard', dashboardRoutes);
 
