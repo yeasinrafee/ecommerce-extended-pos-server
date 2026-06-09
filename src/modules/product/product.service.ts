@@ -104,6 +104,17 @@ const attachOfferDetails = (products: any[]) => {
 	});
 };
 
+const generateUniqueBarcodeId = async (tx: Prisma.TransactionClient): Promise<string> => {
+	while (true) {
+		// 12-digit numeric barcode (EAN-13 style length without check digit)
+		const barcodeId = Array.from({ length: 11 }, () => Math.floor(Math.random() * 10)).join('');
+		const found = await tx.product.findUnique({ where: { barcodeId }, select: { id: true } });
+		if (!found) {
+			return barcodeId;
+		}
+	}
+};
+
 const generateUniqueSlugTx = async (tx: Prisma.TransactionClient, name: string) => {
 	const base = toSlug(name);
 	let slug = base;
@@ -218,6 +229,7 @@ const createProduct = async (payload: CreateProductDto) => {
 
 		const attributeMap = new Map(Array.from(normalizedAttributeMap.entries()).map(([key, value]) => [key, value.id]));
 		const slug = await generateUniqueSlugTx(tx, payload.name);
+		const barcodeId = await generateUniqueBarcodeId(tx);
 		const volume = payload.length != null && payload.width != null && payload.height != null
 			? payload.length * payload.width * payload.height
 			: null;
@@ -227,6 +239,7 @@ const createProduct = async (payload: CreateProductDto) => {
 			data: {
 				name: payload.name,
 				slug,
+				barcodeId,
 				shortDescription: payload.shortDescription ?? null,
 				description: payload.description,
 				Baseprice: payload.basePrice,
@@ -554,6 +567,47 @@ const getProductById = async (id: string) => {
 const getProductBySlug = async (slug: string) => {
 	return prisma.product.findFirst({
 		where: { slug, deletedAt: null },
+		include: {
+			brand: true,
+			categories: { include: { category: true } },
+			tags: { include: { tag: true } },
+			additionalInformations: true,
+			seos: true,
+			productVariations: { where: { deletedAt: null }, include: { attribute: true } },
+			productReviews: {
+				where: { parentId: null },
+				include: {
+					user: {
+						select: {
+							id: true,
+							email: true,
+							customers: { select: { phone: true } },
+							admins: { select: { name: true, image: true } }
+						}
+					},
+					replies: {
+						include: {
+							user: {
+								select: {
+									id: true,
+									email: true,
+									customers: { select: { phone: true } },
+									admins: { select: { name: true, image: true } }
+								}
+							}
+						},
+						orderBy: { createdAt: 'asc' }
+					}
+				},
+				orderBy: { createdAt: 'desc' }
+			}
+		}
+	});
+};
+
+const getProductByBarcodeId = async (barcodeId: string) => {
+	return prisma.product.findFirst({
+		where: { barcodeId, deletedAt: null },
 		include: {
 			brand: true,
 			categories: { include: { category: true } },
@@ -993,6 +1047,7 @@ export const productService = {
 	getAllProducts,
 	getProductById,
 	getProductBySlug,
+	getProductByBarcodeId,
 	getHotDeals,
 	getNewArrivals,
 	getOfferProducts,

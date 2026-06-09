@@ -1,5 +1,6 @@
 model Product {
   id                String        @id @default(cuid())
+  barcodeId         String        @unique
   name              String
   slug              String        @unique
   shortDescription  String?

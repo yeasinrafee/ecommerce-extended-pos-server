@@ -1072,8 +1072,7 @@ const createBill = async (userId: string, payload: CreatePosBillInput) => {
 					const hasActiveDiscount =
 						product.discountType != null &&
 						product.discountType !== DiscountType.NONE &&
-						product.discountValue != null &&
-						isDateWithinInclusiveRange(now, product.discountStartDate, product.discountEndDate);
+						product.discountValue != null;
 
 					const unitFinalPrice = hasActiveDiscount
 						? calculateDiscountedPrice(unitBasePrice, product.discountType as DiscountType, product.discountValue as number)
@@ -1437,8 +1436,7 @@ const updateBill = async (orderId: string, userId: string, payload: UpdatePosBil
 			const hasActiveDiscount =
 				product.discountType != null &&
 				product.discountType !== DiscountType.NONE &&
-				product.discountValue != null &&
-				isDateWithinInclusiveRange(now, product.discountStartDate, product.discountEndDate);
+				product.discountValue != null;
 
 			const unitFinalPrice = hasActiveDiscount
 				? calculateDiscountedPrice(unitBasePrice, product.discountType as DiscountType, product.discountValue as number)

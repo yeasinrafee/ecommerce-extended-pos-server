@@ -390,6 +390,16 @@ const getProductBySlug = async (req: Request, res: Response) => {
 	sendResponse({ res, statusCode: 200, success: true, message: 'Product retrieved', data: product });
 };
 
+const getProductByBarcodeId = async (req: Request, res: Response) => {
+	const barcodeId = String(req.params.barcodeId);
+	const product = await productService.getProductByBarcodeId(barcodeId);
+	if (!product) {
+		throw new AppError(404, 'Product not found', [{ message: 'No product found with the provided barcode ID', code: 'PRODUCT_NOT_FOUND' }]);
+	}
+
+	sendResponse({ res, statusCode: 200, success: true, message: 'Product retrieved', data: product });
+};
+
 const getHotDeals = async (req: Request, res: Response) => {
 	const count = req.query.count ? Number(req.query.count) : 10;
 	const products = await productService.getHotDeals(count);
@@ -737,6 +747,7 @@ export const productController = {
 	getOfferProducts,
  	getProductById,
 	getProductBySlug,
+	getProductByBarcodeId,
  	deleteProduct,
  	updateProduct,
  	patchProduct,

@@ -51,6 +51,7 @@ router.get('/new-arrivals', asyncHandler(productController.getNewArrivals));
 router.get('/offer-products', asyncHandler(productController.getOfferProducts));
 router.get('/get-limited', asyncHandler(productController.getProductsLimited));
 router.get('/get/:slug', asyncHandler(productController.getProductBySlug));
+router.get('/barcode/:barcodeId', asyncHandler(productController.getProductByBarcodeId));
 router.get('/:id', asyncHandler(productController.getProductById));
 router.delete(
 	'/:id',
