@@ -72,6 +72,19 @@ const createProductBodySchema = z.object({
 	length: nullablePositiveNumberSchema,
 	width: nullablePositiveNumberSchema,
 	height: nullablePositiveNumberSchema,
+	barcodeId: z.preprocess((value) => {
+		if (value === '' || value === null || value === undefined) {
+			return null;
+		}
+		const str = String(value).trim();
+		if (str === '') return null;
+		// must be a whole number (digits only, no decimals)
+		if (!/^\d+$/.test(str)) {
+			throw new Error('Barcode ID must be a numeric value');
+		}
+		// strip leading zeros and return as a clean numeric string
+		return String(parseInt(str, 10));
+	}, z.string().nullable()),
 	brandId: z.preprocess((value) => {
 		if (value === '' || value === null || value === undefined) {
 			return undefined;
@@ -199,6 +212,7 @@ const createProduct = async (req: Request, res: Response) => {
 		length: req.body.length,
 		width: req.body.width,
 		height: req.body.height,
+		barcodeId: req.body.barcodeId,
 		brandId: req.body.brandId,
 		status: req.body.status,
 		stockStatus: req.body.stockStatus,
@@ -264,6 +278,7 @@ const createProduct = async (req: Request, res: Response) => {
 
 		const created = await productService.createProduct({
 			name: parsed.name,
+			barcodeId: parsed.barcodeId,
 			shortDescription: parsed.shortDescription,
 			description: parsed.description,
 			basePrice: parsed.basePrice,
@@ -320,6 +335,7 @@ const getProducts = async (req: Request, res: Response) => {
 	const page = Math.max(1, Number(req.query.page ?? 1));
 	const limit = Math.max(1, Number(req.query.limit ?? 20));
 	const searchTerm = req.query.searchTerm ? String(req.query.searchTerm) : undefined;
+	const barcodeId = req.query.barcodeId ? String(req.query.barcodeId) : undefined;
 	const category = req.query.category ? (Array.isArray(req.query.category) ? req.query.category as string[] : String(req.query.category)) : undefined;
 	const brand = req.query.brand ? (Array.isArray(req.query.brand) ? req.query.brand as string[] : String(req.query.brand)) : undefined;
 	const minPrice = req.query.minPrice ? Number(req.query.minPrice) : undefined;
@@ -329,6 +345,7 @@ const getProducts = async (req: Request, res: Response) => {
 		page,
 		limit,
 		searchTerm,
+		barcodeId,
 		category,
 		brand,
 		minPrice,

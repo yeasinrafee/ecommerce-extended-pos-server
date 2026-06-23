@@ -181,6 +181,18 @@ const createProduct = async (payload: CreateProductDto) => {
 			}
 		}
 
+		if (payload.barcodeId?.trim()) {
+			const existingBarcode = await tx.product.findUnique({
+				where: { barcodeId: payload.barcodeId.trim() },
+				select: { id: true }
+			});
+			if (existingBarcode) {
+				throw new AppError(400, 'Barcode ID already exists', [
+					{ message: 'Another product uses the provided barcodeId', code: 'BARCODE_CONFLICT' }
+				]);
+			}
+		}
+
 		const categoryIds = Array.from(new Set(payload.categoryIds));
 		const tagIds = Array.from(new Set(payload.tagIds ?? []));
 
@@ -229,7 +241,9 @@ const createProduct = async (payload: CreateProductDto) => {
 
 		const attributeMap = new Map(Array.from(normalizedAttributeMap.entries()).map(([key, value]) => [key, value.id]));
 		const slug = await generateUniqueSlugTx(tx, payload.name);
-		const barcodeId = await generateUniqueBarcodeId(tx);
+		const barcodeId = payload.barcodeId?.trim()
+			? payload.barcodeId.trim()
+			: await generateUniqueBarcodeId(tx);
 		const volume = payload.length != null && payload.width != null && payload.height != null
 			? payload.length * payload.width * payload.height
 			: null;
@@ -351,6 +365,7 @@ const getProducts = async ({
 	page = 1,
 	limit = 20,
 	searchTerm,
+	barcodeId,
 	category,
 	brand,
 	minPrice,
@@ -361,6 +376,10 @@ const getProducts = async ({
 	const where: Prisma.ProductWhereInput = {
 		deletedAt: null
 	};
+
+	if (barcodeId) {
+		where.barcodeId = { contains: barcodeId, mode: 'insensitive' };
+	}
 
 	if (searchTerm) {
 		where.OR = [

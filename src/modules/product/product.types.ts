@@ -24,6 +24,7 @@ export type CreateProductSeoDto = {
 
 export type CreateProductDto = {
 	name: string;
+	barcodeId?: string | null;
 	shortDescription?: string | null;
 	description: string;
 	basePrice: number;
@@ -106,6 +107,7 @@ export type ProductListQuery = {
 	page?: number;
 	limit?: number;
 	searchTerm?: string;
+	barcodeId?: string;
 	category?: string | string[];
 	brand?: string | string[];
 	minPrice?: number;
