@@ -517,6 +517,8 @@ const normalizeCreatePosBillPayload = (payload: CreatePosBillInput) => {
 	const storeId = toTrimmedString(payload.storeId) || null;
 	const orderDiscount = normalizeOrderDiscountInput(payload.discountType, payload.discountValue);
 	const payments = normalizePaymentLines(payload.payments);
+	// tax is always a percentage value (e.g. 7 means 7%)
+	const taxPercent = Math.max(0, toFiniteNumber(payload.tax) ?? 0);
 
 	let lines: NormalizedPosBillLine[] = [];
 
@@ -600,6 +602,7 @@ const normalizeCreatePosBillPayload = (payload: CreatePosBillInput) => {
 		storeId,
 		lines: Array.from(grouped.values()),
 		orderDiscount,
+		taxPercent,
 		payments
 	};
 };
@@ -762,6 +765,8 @@ const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: strin
 			invoiceNumber: true,
 			storeId: true,
 			baseAmount: true,
+			taxPercent: true,
+			taxAmount: true,
 			finalAmount: true,
 			paidAmount: true,
 			paymentStatus: true,
@@ -902,6 +907,8 @@ const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: strin
 			name: cashierUser?.admins[0]?.name ?? null
 		},
 		baseAmount: createdOrder.baseAmount,
+		taxPercent: createdOrder.taxPercent,
+		taxAmount: createdOrder.taxAmount,
 		finalAmount: createdOrder.finalAmount,
 		paidAmount: createdOrder.paidAmount,
 		totalPaid,
@@ -1129,7 +1136,10 @@ const createBill = async (userId: string, payload: CreatePosBillInput) => {
 
 				const baseAmount = toRoundedMoney(processedLines.reduce((sum, line) => sum + line.lineBaseTotal, 0));
 				const subtotalAmount = toRoundedMoney(processedLines.reduce((sum, line) => sum + line.lineFinalTotal, 0));
-				const finalAmount = applyOrderDiscount(subtotalAmount, normalized.orderDiscount.discountType, normalized.orderDiscount.discountValue);
+				const discountedAmount = applyOrderDiscount(subtotalAmount, normalized.orderDiscount.discountType, normalized.orderDiscount.discountValue);
+				// tax is a percentage applied on the post-discount amount
+				const taxAmount = toRoundedMoney(discountedAmount * (normalized.taxPercent / 100));
+				const finalAmount = toRoundedMoney(discountedAmount + taxAmount);
 				const incomingPaymentTotal = sumPaymentAmounts(normalized.payments);
 
 				if (incomingPaymentTotal > finalAmount) {
@@ -1146,6 +1156,8 @@ const createBill = async (userId: string, payload: CreatePosBillInput) => {
 						storeId: normalized.storeId,
 						invoiceNumber,
 						baseAmount,
+						taxPercent: normalized.taxPercent,
+						taxAmount,
 						finalAmount,
 						paidAmount: 0,
 						orderDiscountType: normalized.orderDiscount.discountType,
@@ -1553,7 +1565,10 @@ const updateBill = async (orderId: string, userId: string, payload: UpdatePosBil
 
 		const baseAmount = toRoundedMoney(processedLines.reduce((sum, line) => sum + line.lineBaseTotal, 0));
 		const subtotalAmount = toRoundedMoney(processedLines.reduce((sum, line) => sum + line.lineFinalTotal, 0));
-		const finalAmount = applyOrderDiscount(subtotalAmount, normalized.orderDiscount.discountType, normalized.orderDiscount.discountValue);
+		const discountedAmount = applyOrderDiscount(subtotalAmount, normalized.orderDiscount.discountType, normalized.orderDiscount.discountValue);
+		// tax is a percentage applied on the post-discount amount
+		const taxAmount = toRoundedMoney(discountedAmount * (normalized.taxPercent / 100));
+		const finalAmount = toRoundedMoney(discountedAmount + taxAmount);
 
 		const paidAggregate = await tx.globalPayment.aggregate({
 			where: {
@@ -1585,6 +1600,8 @@ const updateBill = async (orderId: string, userId: string, payload: UpdatePosBil
 			data: {
 				storeId: normalized.storeId,
 				baseAmount,
+				taxPercent: normalized.taxPercent,
+				taxAmount,
 				finalAmount,
 				paidAmount: existingPaidAmount,
 				orderDiscountType: normalized.orderDiscount.discountType,

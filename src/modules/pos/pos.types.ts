@@ -36,6 +36,7 @@ export type CreatePosBillInput = {
 	storeId?: string;
 	discountType?: DiscountType;
 	discountValue?: number;
+	tax?: number | null;
 	payments?: PosPaymentLineInput[];
 	productId?: string;
 	quantity?: number;
