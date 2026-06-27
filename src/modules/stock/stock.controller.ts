@@ -1,147 +1,391 @@
-import { Request, Response } from 'express';
-import { OrderStatus } from '@prisma/client';
-import { z } from 'zod';
-import { AppError } from '../../common/errors/app-error.js';
-import { sendResponse } from '../../common/utils/send-response.js';
-import { stockService } from './stock.service.js';
+import { Request, Response } from "express";
+import { AppError } from "../../common/errors/app-error.js";
+import { sendResponse } from "../../common/utils/send-response.js";
+import { stockService } from "./stock.service.js";
+import {
+  createLocationSchema,
+  updateLocationSchema,
+  upsertLowStockConfigSchema,
+} from "./stock.validator.js";
+import {
+  DamageReason,
+  StockMovementType,
+  StockTransferStatus,
+} from "@prisma/client";
 
-const parseStockId = (value: string | string[] | undefined) => {
-	const raw = Array.isArray(value) ? value[0] : value;
-	if (!raw || !raw.trim()) {
-		throw new AppError(400, 'Invalid stock id', [
-			{ field: 'id', message: 'Stock id is required', code: 'INVALID_STOCK_ID' }
-		]);
-	}
-	return raw;
+// Location Controller Handlers
+const createLocation = async (req: Request, res: Response) => {
+  const userId = req.user?.id;
+  const payload = createLocationSchema.parse(req.body);
+
+  const data = await stockService.createLocation(payload, userId);
+
+  sendResponse({
+    res,
+    statusCode: 201,
+    success: true,
+    message: "Location created successfully",
+    data,
+  });
 };
 
-const parseOrderStatus = (value: unknown): OrderStatus | undefined => {
-	if (typeof value !== 'string' || !value.trim()) {
-		return undefined;
-	}
+const updateLocation = async (req: Request, res: Response) => {
+  const userId = req.user?.id;
+  const id = req.params.id as string;
+  const payload = updateLocationSchema.parse(req.body);
 
-	const status = value.trim().toUpperCase();
-	if (!(status in OrderStatus)) {
-		throw new AppError(400, 'Invalid order status', [
-			{ field: 'orderStatus', message: 'Invalid order status value', code: 'INVALID_ORDER_STATUS' }
-		]);
-	}
+  const data = await stockService.updateLocation(id, payload, userId);
 
-	return status as OrderStatus;
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: "Location updated successfully",
+    data,
+  });
 };
 
-const createStock = async (req: Request, res: Response) => {
-	const userId = req.user?.id;
-	if (!userId) {
-		throw new AppError(401, 'Unauthorized', [
-			{ message: 'Authentication required', code: 'UNAUTHORIZED' }
-		]);
-	}
+const deleteLocation = async (req: Request, res: Response) => {
+  const id = req.params.id as string;
+  await stockService.deleteLocation(id);
 
-	const created = await stockService.createStock(userId, req.body || {});
-
-	sendResponse({
-		res,
-		statusCode: 201,
-		success: true,
-		message: 'Stock created',
-		data: created
-	});
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: "Location deleted successfully",
+    data: null,
+  });
 };
 
-const updateStock = async (req: Request, res: Response) => {
-	const id = parseStockId(req.params.id);
-	const updated = await stockService.updateStock(id, req.body || {});
+const getLocations = async (req: Request, res: Response) => {
+  const page = Number(req.query.page ?? 1);
+  const limit = Number(req.query.limit ?? 10);
+  const searchTerm =
+    typeof req.query.searchTerm === "string" ? req.query.searchTerm : undefined;
 
-	sendResponse({
-		res,
-		statusCode: 200,
-		success: true,
-		message: 'Stock updated',
-		data: updated
-	});
+  const result = await stockService.getLocations({ page, limit, searchTerm });
+
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: "Locations fetched successfully",
+    data: result.data,
+    meta: result.meta,
+  });
 };
 
-const bulkPatchStocksBodySchema = z.object({
-	ids: z.array(z.string().trim().min(1)).min(1, 'At least one stock id is required'),
-	orderStatus: z.enum(['PENDING', 'CONFIRMED', 'SHIPPED', 'DELIVERED', 'CANCELLED'])
-});
+const getAllLocations = async (_req: Request, res: Response) => {
+  const data = await stockService.getAllLocations();
 
-const bulkPatchStocks = async (req: Request, res: Response) => {
-	const parsed = bulkPatchStocksBodySchema.parse(req.body);
-	const result = await stockService.bulkPatchStocks(parsed);
-
-	sendResponse({
-		res,
-		statusCode: 200,
-		success: true,
-		message: `${result.count} stock(s) updated`,
-		data: result
-	});
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: "All locations fetched successfully",
+    data,
+  });
 };
 
+const getLocation = async (req: Request, res: Response) => {
+  const id = req.params.id as string;
+  const data = await stockService.getLocationById(id);
+
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: "Location fetched successfully",
+    data,
+  });
+};
+
+// Stock levels Handlers
 const getStocks = async (req: Request, res: Response) => {
-	const page = Number(req.query.page ?? 1);
-	const limit = Number(req.query.limit ?? 10);
-	const searchTerm = typeof req.query.searchTerm === 'string' ? req.query.searchTerm : undefined;
-	const orderStatus = parseOrderStatus(req.query.orderStatus);
+  const page = Number(req.query.page ?? 1);
+  const limit = Number(req.query.limit ?? 10);
+  const productId =
+    typeof req.query.productId === "string" ? req.query.productId : undefined;
+  const locationId =
+    typeof req.query.locationId === "string" ? req.query.locationId : undefined;
+  const searchTerm =
+    typeof req.query.searchTerm === "string" ? req.query.searchTerm : undefined;
 
-	const result = await stockService.getStocks({ page, limit, searchTerm, orderStatus });
+  const result = await stockService.getStocks({
+    page,
+    limit,
+    productId,
+    locationId,
+    searchTerm,
+  });
 
-	sendResponse({
-		res,
-		statusCode: 200,
-		success: true,
-		message: 'Stocks fetched',
-		data: result.data,
-		meta: result.meta
-	});
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: "Stocks fetched successfully",
+    data: result.data,
+    meta: result.meta,
+  });
 };
 
 const getStock = async (req: Request, res: Response) => {
-	const id = parseStockId(req.params.id);
-	const stock = await stockService.getStockById(id);
+  const productId = req.params.productId as string;
+  const locationId = req.params.locationId as string;
+  if (!productId || !locationId) {
+    throw new AppError(400, "productId and locationId are required");
+  }
 
-	sendResponse({
-		res,
-		statusCode: 200,
-		success: true,
-		message: 'Stock fetched',
-		data: stock
-	});
+  const data = await stockService.getStockByProductAndLocation(
+    productId,
+    locationId,
+  );
+
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: "Stock details fetched successfully",
+    data,
+  });
 };
 
-const generateInvoiceNumber = async (_req: Request, res: Response) => {
-	const invoiceNumber = await stockService.generateInvoiceNumber();
+// Low Stock Alert Configurations
+const upsertLowStockConfig = async (req: Request, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) throw new AppError(401, "Unauthorized");
 
-	sendResponse({
-		res,
-		statusCode: 200,
-		success: true,
-		message: 'Invoice number generated',
-		data: { invoiceNumber }
-	});
+  const payload = upsertLowStockConfigSchema.parse(req.body);
+  const data = await stockService.upsertLowStockConfig(payload, userId);
+
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: "Low stock safety threshold configured successfully",
+    data,
+  });
 };
 
-const deleteStock = async (req: Request, res: Response) => {
-	const id = parseStockId(req.params.id);
-	await stockService.deleteStock(id);
+const getLowStockAlerts = async (req: Request, res: Response) => {
+  const page = Number(req.query.page ?? 1);
+  const limit = Number(req.query.limit ?? 10);
+  const locationId =
+    typeof req.query.locationId === "string" ? req.query.locationId : undefined;
 
-	sendResponse({
-		res,
-		statusCode: 200,
-		success: true,
-		message: 'Stock deleted',
-		data: null
-	});
+  const result = await stockService.getLowStockAlerts({
+    page,
+    limit,
+    locationId,
+  });
+
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: "Low stock active alerts fetched successfully",
+    data: result.data,
+    meta: result.meta,
+  });
+};
+
+const getReorderSuggestions = async (req: Request, res: Response) => {
+  const page = Number(req.query.page ?? 1);
+  const limit = Number(req.query.limit ?? 10);
+  const locationId =
+    typeof req.query.locationId === "string" ? req.query.locationId : undefined;
+
+  const result = await stockService.getReorderSuggestions({
+    page,
+    limit,
+    locationId,
+  });
+
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: "Reorder suggestions fetched successfully",
+    data: result.data,
+    meta: result.meta,
+  });
+};
+
+// Reports Controllers
+const getCurrentStockReport = async (req: Request, res: Response) => {
+  const locationId =
+    typeof req.query.locationId === "string" ? req.query.locationId : undefined;
+  const data = await stockService.getCurrentStockReport(locationId);
+
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: "Current stock report generated",
+    data,
+  });
+};
+
+const getMovementReport = async (req: Request, res: Response) => {
+  const page = Number(req.query.page ?? 1);
+  const limit = Number(req.query.limit ?? 10);
+  const startDate =
+    typeof req.query.startDate === "string" ? req.query.startDate : undefined;
+  const endDate =
+    typeof req.query.endDate === "string" ? req.query.endDate : undefined;
+  const locationId =
+    typeof req.query.locationId === "string" ? req.query.locationId : undefined;
+  const productId =
+    typeof req.query.productId === "string" ? req.query.productId : undefined;
+  const movementType = req.query.movementType as StockMovementType | undefined;
+
+  const result = await stockService.getMovementReport({
+    startDate,
+    endDate,
+    locationId,
+    productId,
+    movementType,
+    page,
+    limit,
+  });
+
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: "Stock movements report generated",
+    data: result.data,
+    meta: result.meta,
+  });
+};
+
+const getTransferReport = async (req: Request, res: Response) => {
+  const page = Number(req.query.page ?? 1);
+  const limit = Number(req.query.limit ?? 10);
+  const startDate =
+    typeof req.query.startDate === "string" ? req.query.startDate : undefined;
+  const endDate =
+    typeof req.query.endDate === "string" ? req.query.endDate : undefined;
+  const sourceLocationId =
+    typeof req.query.sourceLocationId === "string"
+      ? req.query.sourceLocationId
+      : undefined;
+  const destinationLocationId =
+    typeof req.query.destinationLocationId === "string"
+      ? req.query.destinationLocationId
+      : undefined;
+  const status = req.query.status as StockTransferStatus | undefined;
+
+  const result = await stockService.getTransferReport({
+    startDate,
+    endDate,
+    sourceLocationId,
+    destinationLocationId,
+    status,
+    page,
+    limit,
+  });
+
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: "Stock transfers report generated",
+    data: result.data,
+    meta: result.meta,
+  });
+};
+
+const getDamageReport = async (req: Request, res: Response) => {
+  const page = Number(req.query.page ?? 1);
+  const limit = Number(req.query.limit ?? 10);
+  const startDate =
+    typeof req.query.startDate === "string" ? req.query.startDate : undefined;
+  const endDate =
+    typeof req.query.endDate === "string" ? req.query.endDate : undefined;
+  const locationId =
+    typeof req.query.locationId === "string" ? req.query.locationId : undefined;
+  const reason = req.query.reason as DamageReason | undefined;
+
+  const result = await stockService.getDamageReport({
+    startDate,
+    endDate,
+    locationId,
+    reason,
+    page,
+    limit,
+  });
+
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: "Damages report generated",
+    data: result.data,
+    meta: result.meta,
+  });
+};
+
+const getAdjustmentReport = async (req: Request, res: Response) => {
+  const page = Number(req.query.page ?? 1);
+  const limit = Number(req.query.limit ?? 20);
+  const startDate =
+    typeof req.query.startDate === "string" ? req.query.startDate : undefined;
+  const endDate =
+    typeof req.query.endDate === "string" ? req.query.endDate : undefined;
+  const locationId =
+    typeof req.query.locationId === "string" ? req.query.locationId : undefined;
+  const status =
+    typeof req.query.status === "string" ? req.query.status : undefined;
+
+  const result = await stockService.getAdjustmentReport({
+    startDate,
+    endDate,
+    locationId,
+    status,
+    page,
+    limit,
+  });
+
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: "Stock adjustments report generated",
+    data: result.data,
+    meta: result.meta,
+  });
+};
+
+const getInventoryDashboardSummary = async (_req: Request, res: Response) => {
+  const data = await stockService.getInventoryDashboardSummary();
+
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: "Inventory dashboard summary fetched successfully",
+    data,
+  });
 };
 
 export const stockController = {
-	createStock,
-	updateStock,
-	bulkPatchStocks,
-	getStocks,
-	getStock,
-	generateInvoiceNumber,
-	deleteStock
+  createLocation,
+  updateLocation,
+  deleteLocation,
+  getLocations,
+  getAllLocations,
+  getLocation,
+  getStocks,
+  getStock,
+  upsertLowStockConfig,
+  getLowStockAlerts,
+  getReorderSuggestions,
+  getCurrentStockReport,
+  getMovementReport,
+  getTransferReport,
+  getDamageReport,
+  getAdjustmentReport,
+  getInventoryDashboardSummary,
 };

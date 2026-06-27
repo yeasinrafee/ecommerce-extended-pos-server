@@ -8,10 +8,24 @@ model Supplier {
 	companyName String?
 	status      Status  @default(ACTIVE)
 	image       String?
+	totalPurchaseAmount Float           @default(0)
+	paidAmount          Float           @default(0)
+	dueAmount           Float           @default(0)
+
+	createdBy           String?
+	creator             User?           @relation("SupplierCreatedBy", fields: [createdBy], references: [id])
+	updatedBy           String?
+	updater             User?           @relation("SupplierUpdatedBy", fields: [updatedBy], references: [id])
+
 	createdAt   DateTime        @default(now())
 	updatedAt   DateTime        @updatedAt
 	deletedAt   DateTime?
 
-	stocks Stock[]
+	supplierPayments    SupplierPayment[]
+	purchaseOrders      PurchaseOrder[]
+	goodsReceives       GoodsReceive[]
+	supplierReturns     SupplierReturn[]
+
+	@@map("suppliers")
 }
 

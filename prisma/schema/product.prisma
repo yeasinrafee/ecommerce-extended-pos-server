@@ -43,12 +43,20 @@ model Product {
 
   orderItems OrderItem[]
 
-  stockProducts         StockProduct[]
-  stockProductTransfers StockProductTransfer[]
-
   offerProducts OfferProduct[]
 
   posOrderItems PosOrderItem[]
+
+  stocks                Stock[]
+  purchaseOrderItems    PurchaseOrderItem[]
+  goodsReceiveItems     GoodsReceiveItem[]
+  stockMovements        StockMovement[]
+  stockTransferItems    StockTransferItem[]
+  supplierReturnItems   SupplierReturnItem[]
+  customerReturnItems   CustomerReturnItem[]
+  stockAdjustmentItems  StockAdjustmentItem[]
+  damageItems           DamageItem[]
+  lowStockConfigs       LowStockConfig[]
 }
 
 model ProductReview {

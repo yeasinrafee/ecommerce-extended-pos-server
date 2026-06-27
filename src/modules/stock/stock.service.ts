@@ -1,715 +1,827 @@
-import crypto from 'node:crypto';
-import { OrderStatus, Prisma } from '@prisma/client';
-import { AppError } from '../../common/errors/app-error.js';
-import { prisma } from '../../config/prisma.js';
-import type {
-	BulkPatchStockDto,
-	CreateStockDto,
-	CreateStockProductDto,
-	ServiceListResult,
-	StockListQuery,
-	UpdateStockDto
-} from './stock.types.js';
-
-const INVOICE_REGEX = /^\d{12}$/;
-
-type NormalizedStockProduct = {
-	productId: string;
-	quantity: number;
-	purchasePrice: number;
-	totalPrice: number;
-};
-
-const toNumber = (value: unknown) => {
-	if (typeof value === 'number') {
-		return Number.isFinite(value) ? value : NaN;
-	}
-
-	if (typeof value === 'string') {
-		const parsed = Number(value);
-		return Number.isFinite(parsed) ? parsed : NaN;
-	}
-
-	return NaN;
-};
-
-const toInteger = (value: unknown) => {
-	const parsed = toNumber(value);
-	return Number.isInteger(parsed) ? parsed : NaN;
-};
-
-const normalizeTrimmedString = (value: unknown) => {
-	if (typeof value !== 'string') return '';
-	return value.trim();
-};
-
-const parseCreatedAt = (value: unknown) => {
-	if (value === undefined) return undefined;
-	if (value instanceof Date) {
-		if (Number.isNaN(value.getTime())) {
-			throw new AppError(400, 'Invalid create date', [
-				{ field: 'createdAt', message: 'Create date must be a valid date', code: 'INVALID_DATE' }
-			]);
-		}
-		return value;
-	}
-
-	if (typeof value === 'string') {
-		const date = new Date(value);
-		if (Number.isNaN(date.getTime())) {
-			throw new AppError(400, 'Invalid create date', [
-				{ field: 'createdAt', message: 'Create date must be a valid date', code: 'INVALID_DATE' }
-			]);
-		}
-		return date;
-	}
-
-	throw new AppError(400, 'Invalid create date', [
-		{ field: 'createdAt', message: 'Create date must be a valid date', code: 'INVALID_DATE' }
-	]);
-};
-
-const normalizeProducts = (products: CreateStockProductDto[] | undefined, required: boolean): NormalizedStockProduct[] => {
-	if (!products) {
-		if (required) {
-			throw new AppError(400, 'Products are required', [
-				{ field: 'products', message: 'At least one product is required', code: 'PRODUCTS_REQUIRED' }
-			]);
-		}
-
-		return [];
-	}
-
-	if (!Array.isArray(products)) {
-		throw new AppError(400, 'Invalid products payload', [
-			{ field: 'products', message: 'Products must be an array', code: 'INVALID_PRODUCTS' }
-		]);
-	}
-
-	if (required && products.length === 0) {
-		throw new AppError(400, 'Products are required', [
-			{ field: 'products', message: 'At least one product is required', code: 'PRODUCTS_REQUIRED' }
-		]);
-	}
-
-	const seen = new Set<string>();
-
-	return products.map((item, index) => {
-		const productId = normalizeTrimmedString(item?.productId);
-		const quantity = toInteger(item?.quantity);
-		const purchasePrice = toNumber(item?.purchasePrice);
-
-		if (!productId) {
-			throw new AppError(400, 'Invalid product id', [
-				{ field: `products.${index}.productId`, message: 'Product id is required', code: 'INVALID_PRODUCT_ID' }
-			]);
-		}
-
-		if (seen.has(productId)) {
-			throw new AppError(400, 'Duplicate product found', [
-				{ field: `products.${index}.productId`, message: 'Each product can be selected only once', code: 'DUPLICATE_PRODUCT' }
-			]);
-		}
-
-		if (!Number.isInteger(quantity) || quantity <= 0) {
-			throw new AppError(400, 'Invalid quantity', [
-				{ field: `products.${index}.quantity`, message: 'Quantity must be a positive integer', code: 'INVALID_QUANTITY' }
-			]);
-		}
-
-		if (!Number.isFinite(purchasePrice) || purchasePrice < 0) {
-			throw new AppError(400, 'Invalid purchase price', [
-				{ field: `products.${index}.purchasePrice`, message: 'Purchase price must be 0 or greater', code: 'INVALID_PURCHASE_PRICE' }
-			]);
-		}
-
-		seen.add(productId);
-
-		return {
-			productId,
-			quantity,
-			purchasePrice,
-			totalPrice: Number((quantity * purchasePrice).toFixed(2))
-		};
-	});
-};
-
-const buildStockWhere = ({ searchTerm, orderStatus }: Pick<StockListQuery, 'searchTerm' | 'orderStatus'>): Prisma.StockWhereInput => {
-	const where: Prisma.StockWhereInput = {
-		deletedAt: null
-	};
-
-	if (searchTerm) {
-		where.OR = [
-			{ invoiceNumber: { contains: searchTerm, mode: 'insensitive' } },
-			{ note: { contains: searchTerm, mode: 'insensitive' } },
-			{ supplier: { name: { contains: searchTerm, mode: 'insensitive' } } },
-			{ store: { name: { contains: searchTerm, mode: 'insensitive' } } },
-			{ user: { email: { contains: searchTerm, mode: 'insensitive' } } }
-		];
-	}
-
-	if (orderStatus) {
-		where.orderStatus = orderStatus;
-	}
-
-	return where;
-};
-
-const generateInvoiceCandidate = () => {
-	const max = 1_000_000_000_000;
-	const value = crypto.randomInt(0, max);
-	return String(value).padStart(12, '0');
-};
-
-const validateInvoiceNumberFormat = (invoiceNumber: string) => {
-	if (!INVOICE_REGEX.test(invoiceNumber)) {
-		throw new AppError(400, 'Invalid invoice number format', [
-			{ field: 'invoiceNumber', message: 'Invoice number must be 12 digits', code: 'INVALID_INVOICE_NUMBER' }
-		]);
-	}
-};
-
-const ensureSupplierAndStore = async (tx: Prisma.TransactionClient, supplierId: number, storeId: string) => {
-	const [supplier, store] = await Promise.all([
-		tx.supplier.findFirst({ where: { id: supplierId, deletedAt: null }, select: { id: true } }),
-		tx.store.findFirst({ where: { id: storeId, deletedAt: null }, select: { id: true } })
-	]);
-
-	if (!supplier) {
-		throw new AppError(404, 'Supplier not found', [
-			{ field: 'supplierId', message: 'No active supplier found with this id', code: 'SUPPLIER_NOT_FOUND' }
-		]);
-	}
-
-	if (!store) {
-		throw new AppError(404, 'Store not found', [
-			{ field: 'storeId', message: 'No active store found with this id', code: 'STORE_NOT_FOUND' }
-		]);
-	}
-};
-
-const ensureProductsExist = async (tx: Prisma.TransactionClient, products: NormalizedStockProduct[]) => {
-	const ids = products.map((item) => item.productId);
-	const existing = await tx.product.findMany({
-		where: {
-			id: { in: ids },
-			deletedAt: null
-		},
-		select: { id: true }
-	});
-
-	if (existing.length !== ids.length) {
-		const existingSet = new Set(existing.map((item) => item.id));
-		const missing = ids.filter((id) => !existingSet.has(id));
-		throw new AppError(404, 'Some products were not found', [
-			{ field: 'products', message: `Missing products: ${missing.join(', ')}`, code: 'PRODUCT_NOT_FOUND' }
-		]);
-	}
-};
-
-const ensureUniqueInvoiceNumber = async (
-	tx: Prisma.TransactionClient,
-	invoiceNumber: string,
-	excludeStockId?: string
-) => {
-	const found = await tx.stock.findFirst({
-		where: {
-			invoiceNumber,
-			...(excludeStockId ? { id: { not: excludeStockId } } : {})
-		},
-		select: { id: true }
-	});
-
-	if (found) {
-		throw new AppError(409, 'Invoice number already exists', [
-			{ field: 'invoiceNumber', message: 'Invoice number must be unique', code: 'DUPLICATE_INVOICE_NUMBER' }
-		]);
-	}
-};
-
-const getOrGenerateInvoiceNumber = async (
-	tx: Prisma.TransactionClient,
-	providedInvoiceNumber?: string,
-	excludeStockId?: string
-) => {
-	if (providedInvoiceNumber) {
-		validateInvoiceNumberFormat(providedInvoiceNumber);
-		await ensureUniqueInvoiceNumber(tx, providedInvoiceNumber, excludeStockId);
-		return providedInvoiceNumber;
-	}
-
-	for (let attempt = 0; attempt < 30; attempt += 1) {
-		const generated = generateInvoiceCandidate();
-		const found = await tx.stock.findFirst({ where: { invoiceNumber: generated }, select: { id: true } });
-		if (!found) {
-			return generated;
-		}
-	}
-
-	throw new AppError(500, 'Failed to generate invoice number', [
-		{ field: 'invoiceNumber', message: 'Could not generate a unique invoice number', code: 'INVOICE_GENERATION_FAILED' }
-	]);
-};
-
-const applyStockDelta = async (tx: Prisma.TransactionClient, productId: string, delta: number) => {
-	if (delta === 0) return;
-
-	if (delta > 0) {
-		await tx.product.update({
-			where: { id: productId },
-			data: {
-				stock: {
-					increment: delta
-				}
-			}
-		});
-		return;
-	}
-
-	const result = await tx.product.updateMany({
-		where: {
-			id: productId,
-			stock: {
-				gte: Math.abs(delta)
-			}
-		},
-		data: {
-			stock: {
-				decrement: Math.abs(delta)
-			}
-		}
-	});
-
-	if (result.count === 0) {
-		throw new AppError(400, 'Insufficient product stock for adjustment', [
-			{ field: 'products', message: `Cannot reduce stock for product ${productId}`, code: 'INSUFFICIENT_PRODUCT_STOCK' }
-		]);
-	}
-};
-
-const sumTotals = (products: NormalizedStockProduct[]) => {
-	const totalProductQuantity = products.reduce((sum, item) => sum + item.quantity, 0);
-	const grandTotal = Number(products.reduce((sum, item) => sum + item.totalPrice, 0).toFixed(2));
-	return { totalProductQuantity, grandTotal };
-};
-
-const getStocks = async ({
-	page = 1,
-	limit = 10,
-	searchTerm,
-	orderStatus
-}: StockListQuery = {}): Promise<ServiceListResult<any>> => {
-	const safePage = Number.isFinite(page) && page > 0 ? page : 1;
-	const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 10;
-	const skip = (safePage - 1) * safeLimit;
-	const where = buildStockWhere({ searchTerm, orderStatus });
-
-	const [data, total] = await Promise.all([
-		prisma.stock.findMany({
-			where,
-			skip,
-			take: safeLimit,
-			orderBy: { createdAt: 'desc' },
-			include: {
-				supplier: true,
-				store: true,
-				user: {
-					select: {
-						id: true,
-						email: true,
-						admins: {
-							select: { name: true },
-							take: 1
-						}
-					}
-				}
-			}
-		}),
-		prisma.stock.count({ where })
-	]);
-
-	return {
-		data,
-		meta: {
-			page: safePage,
-			limit: safeLimit,
-			total,
-			totalPages: Math.max(1, Math.ceil(total / safeLimit))
-		}
-	};
-};
-
-const getStockById = async (id: string) => {
-	return prisma.stock.findFirst({
-		where: {
-			id,
-			deletedAt: null
-		},
-		include: {
-			supplier: true,
-			store: true,
-			user: {
-				select: {
-					id: true,
-					email: true,
-					admins: {
-						select: { name: true },
-						take: 1
-					}
-				}
-			},
-			stockProducts: {
-				where: { deletedAt: null },
-				include: {
-					product: {
-						select: {
-							id: true,
-							name: true,
-							sku: true,
-							image: true,
-							stock: true
-						}
-					}
-				},
-				orderBy: { createdAt: 'asc' }
-			}
-		}
-	});
-};
-
-const generateInvoiceNumber = async () => {
-	return prisma.$transaction(async (tx) => getOrGenerateInvoiceNumber(tx));
-};
-
-const createStock = async (userId: string, payload: CreateStockDto) => {
-	const supplierId = toInteger(payload?.supplierId);
-	const storeId = normalizeTrimmedString(payload?.storeId);
-	const note = payload?.note === undefined ? undefined : payload.note?.trim() || null;
-	const orderStatus = payload?.orderStatus ?? OrderStatus.PENDING;
-	const createdAt = parseCreatedAt(payload?.createdAt);
-	const products = normalizeProducts(payload?.products, true);
-
-	if (!Number.isInteger(supplierId) || supplierId <= 0) {
-		throw new AppError(400, 'Invalid supplier id', [
-			{ field: 'supplierId', message: 'Supplier is required', code: 'INVALID_SUPPLIER_ID' }
-		]);
-	}
-
-	if (!storeId) {
-		throw new AppError(400, 'Invalid store id', [
-			{ field: 'storeId', message: 'Store is required', code: 'INVALID_STORE_ID' }
-		]);
-	}
-
-	const totals = sumTotals(products);
-
-	return prisma.$transaction(async (tx) => {
-		await ensureSupplierAndStore(tx, supplierId, storeId);
-		await ensureProductsExist(tx, products);
-		const invoiceNumber = await getOrGenerateInvoiceNumber(tx, payload?.invoiceNumber);
-
-		for (const item of products) {
-			await applyStockDelta(tx, item.productId, item.quantity);
-		}
-
-		const created = await tx.stock.create({
-			data: {
-				userId,
-				supplierId,
-				storeId,
-				invoiceNumber,
-				note,
-				orderStatus,
-				totalProductQuantity: totals.totalProductQuantity,
-				grandTotal: totals.grandTotal,
-				...(createdAt ? { createdAt } : {}),
-				stockProducts: {
-					create: products.map((item) => ({
-						productId: item.productId,
-						quantity: item.quantity,
-						purchasePrice: item.purchasePrice,
-						totalPrice: item.totalPrice
-					}))
-				}
-			}
-		});
-
-		return tx.stock.findUnique({
-			where: { id: created.id },
-			include: {
-				supplier: true,
-				store: true,
-				user: {
-					select: {
-						id: true,
-						email: true,
-						admins: {
-							select: { name: true },
-							take: 1
-						}
-					}
-				},
-				stockProducts: {
-					where: { deletedAt: null },
-					include: {
-						product: {
-							select: {
-								id: true,
-								name: true,
-								sku: true,
-								image: true,
-								stock: true
-							}
-						}
-					}
-				}
-			}
-		});
-	});
-};
-
-const updateStock = async (id: string, payload: UpdateStockDto) => {
-	const existing = await prisma.stock.findFirst({
-		where: {
-			id,
-			deletedAt: null
-		},
-		include: {
-			stockProducts: {
-				where: { deletedAt: null },
-				select: { productId: true, quantity: true }
-			}
-		}
-	});
-
-	if (!existing) {
-		throw new AppError(404, 'Stock not found', [
-			{ field: 'id', message: 'No active stock found with this id', code: 'STOCK_NOT_FOUND' }
-		]);
-	}
-
-	const hasProducts = Object.prototype.hasOwnProperty.call(payload, 'products');
-	const products = hasProducts ? normalizeProducts(payload.products, true) : [];
-	const supplierId = payload.supplierId === undefined ? undefined : toInteger(payload.supplierId);
-	const storeId = payload.storeId === undefined ? undefined : normalizeTrimmedString(payload.storeId);
-	const note = payload.note === undefined ? undefined : payload.note?.trim() || null;
-	const createdAt = parseCreatedAt(payload.createdAt);
-
-	if (supplierId !== undefined && (!Number.isInteger(supplierId) || supplierId <= 0)) {
-		throw new AppError(400, 'Invalid supplier id', [
-			{ field: 'supplierId', message: 'Supplier id must be a valid number', code: 'INVALID_SUPPLIER_ID' }
-		]);
-	}
-
-	if (storeId !== undefined && !storeId) {
-		throw new AppError(400, 'Invalid store id', [
-			{ field: 'storeId', message: 'Store id is required', code: 'INVALID_STORE_ID' }
-		]);
-	}
-
-	return prisma.$transaction(async (tx) => {
-		if (supplierId !== undefined || storeId !== undefined) {
-			await ensureSupplierAndStore(tx, supplierId ?? existing.supplierId, storeId ?? existing.storeId);
-		}
-
-		let invoiceNumber: string | undefined;
-		if (payload.invoiceNumber !== undefined) {
-			if (payload.invoiceNumber !== existing.invoiceNumber) {
-				invoiceNumber = await getOrGenerateInvoiceNumber(tx, payload.invoiceNumber, id);
-			} else {
-				invoiceNumber = payload.invoiceNumber;
-			}
-		}
-
-		if (hasProducts) {
-			await ensureProductsExist(tx, products);
-			const oldQuantities = new Map<string, number>();
-			for (const item of existing.stockProducts) {
-				oldQuantities.set(item.productId, item.quantity);
-			}
-
-			const newQuantities = new Map<string, number>();
-			for (const item of products) {
-				newQuantities.set(item.productId, item.quantity);
-			}
-
-			const productIds = new Set<string>([...oldQuantities.keys(), ...newQuantities.keys()]);
-			for (const productId of productIds) {
-				const oldQty = oldQuantities.get(productId) ?? 0;
-				const newQty = newQuantities.get(productId) ?? 0;
-				const delta = newQty - oldQty;
-				await applyStockDelta(tx, productId, delta);
-			}
-
-			await tx.stockProduct.updateMany({
-				where: {
-					stockId: id,
-					deletedAt: null
-				},
-				data: {
-					deletedAt: new Date()
-				}
-			});
-
-			if (products.length > 0) {
-				await tx.stockProduct.createMany({
-					data: products.map((item) => ({
-						stockId: id,
-						productId: item.productId,
-						quantity: item.quantity,
-						purchasePrice: item.purchasePrice,
-						totalPrice: item.totalPrice
-					}))
-				});
-			}
-		}
-
-		const data: Prisma.StockUpdateInput = {};
-
-		if (supplierId !== undefined) {
-			data.supplier = {
-				connect: { id: supplierId }
-			};
-		}
-
-		if (storeId !== undefined) {
-			data.store = {
-				connect: { id: storeId }
-			};
-		}
-
-		if (invoiceNumber !== undefined) {
-			data.invoiceNumber = invoiceNumber;
-		}
-
-		if (note !== undefined) {
-			data.note = note;
-		}
-
-		if (payload.orderStatus !== undefined) {
-			data.orderStatus = payload.orderStatus;
-		}
-
-		if (createdAt !== undefined) {
-			data.createdAt = createdAt;
-		}
-
-		if (hasProducts) {
-			const totals = sumTotals(products);
-			data.totalProductQuantity = totals.totalProductQuantity;
-			data.grandTotal = totals.grandTotal;
-		}
-
-		const updated = Object.keys(data).length
-			? await tx.stock.update({ where: { id }, data })
-			: await tx.stock.findUnique({ where: { id } });
-
-		if (!updated) {
-			throw new AppError(404, 'Stock not found', [
-				{ field: 'id', message: 'No active stock found with this id', code: 'STOCK_NOT_FOUND' }
-			]);
-		}
-
-		return tx.stock.findUnique({
-			where: { id: updated.id },
-			include: {
-				supplier: true,
-				store: true,
-				user: {
-					select: {
-						id: true,
-						email: true,
-						admins: {
-							select: { name: true },
-							take: 1
-						}
-					}
-				},
-				stockProducts: {
-					where: { deletedAt: null },
-					include: {
-						product: {
-							select: {
-								id: true,
-								name: true,
-								sku: true,
-								stock: true
-							}
-						}
-					}
-				}
-			}
-		});
-	});
-};
-
-const deleteStock = async (id: string) => {
-	return prisma.$transaction(async (tx) => {
-		const existing = await tx.stock.findFirst({
-			where: {
-				id,
-				deletedAt: null
-			},
-			include: {
-				stockProducts: {
-					where: { deletedAt: null },
-					select: { productId: true, quantity: true }
-				}
-			}
-		});
-
-		if (!existing) {
-			throw new AppError(404, 'Stock not found', [
-				{ field: 'id', message: 'No active stock found with this id', code: 'STOCK_NOT_FOUND' }
-			]);
-		}
-
-		for (const item of existing.stockProducts) {
-			await applyStockDelta(tx, item.productId, -item.quantity);
-		}
-
-		await tx.stockProduct.updateMany({
-			where: {
-				stockId: id,
-				deletedAt: null
-			},
-			data: {
-				deletedAt: new Date()
-			}
-		});
-
-		await tx.stock.update({
-			where: { id },
-			data: {
-				deletedAt: new Date()
-			}
-		});
-
-		return true;
-	});
-};
-
-const bulkPatchStocks = async (payload: BulkPatchStockDto) => {
-	return prisma.stock.updateMany({
-		where: {
-			id: {
-				in: payload.ids
-			},
-			deletedAt: null
-		},
-		data: {
-			orderStatus: payload.orderStatus
-		}
-	});
-};
-
-export const stockService = {
-	getStocks,
-	getStockById,
-	generateInvoiceNumber,
-	createStock,
-	updateStock,
-	bulkPatchStocks,
-	deleteStock
-};
+import { prisma } from "../../config/prisma.js";
+import { AppError } from "../../common/errors/app-error.js";
+import { Prisma, LocationType, Status } from "@prisma/client";
+import { stockRepository } from "./stock.repository.js";
+
+export class StockService {
+  // Location CRUD
+  async getLocations(
+    params: { page?: number; limit?: number; searchTerm?: string } = {},
+  ) {
+    const page = params.page ?? 1;
+    const limit = params.limit ?? 10;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.LocationWhereInput = { deletedAt: null };
+
+    if (params.searchTerm) {
+      where.OR = [
+        { name: { contains: params.searchTerm, mode: "insensitive" } },
+        { code: { contains: params.searchTerm, mode: "insensitive" } },
+      ];
+    }
+
+    const [data, total] = await Promise.all([
+      stockRepository.findManyLocations(where, skip, limit),
+      stockRepository.countLocations(where),
+    ]);
+
+    return {
+      data,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
+    };
+  }
+
+  async getAllLocations() {
+    return prisma.location.findMany({
+      where: { deletedAt: null },
+      orderBy: { name: "asc" },
+    });
+  }
+
+  async getLocationById(id: string) {
+    const location = await stockRepository.findLocationById(id);
+    if (!location) {
+      throw new AppError(404, "Location not found");
+    }
+    return location;
+  }
+
+  async createLocation(payload: any, userId?: string) {
+    const existing = await stockRepository.findLocationByCode(payload.code);
+    if (existing) {
+      throw new AppError(
+        409,
+        `Location code ${payload.code} is already in use`,
+      );
+    }
+
+    return stockRepository.createLocation({
+      name: payload.name,
+      code: payload.code.toUpperCase(),
+      type: payload.type,
+      address: payload.address ?? null,
+      phone: payload.phone ?? null,
+      status: payload.status ?? Status.ACTIVE,
+      creator: userId ? { connect: { id: userId } } : undefined,
+    });
+  }
+
+  async updateLocation(id: string, payload: any, userId?: string) {
+    const location = await this.getLocationById(id);
+
+    if (payload.code && payload.code.toUpperCase() !== location.code) {
+      const existing = await stockRepository.findLocationByCode(payload.code);
+      if (existing) {
+        throw new AppError(
+          409,
+          `Location code ${payload.code} is already in use`,
+        );
+      }
+    }
+
+    return stockRepository.updateLocation(id, {
+      name: payload.name,
+      code: payload.code ? payload.code.toUpperCase() : undefined,
+      type: payload.type,
+      address: payload.address,
+      phone: payload.phone,
+      status: payload.status,
+      updater: userId ? { connect: { id: userId } } : undefined,
+    });
+  }
+
+  async deleteLocation(id: string) {
+    await this.getLocationById(id);
+
+    // Prevent deletion of location if it holds stock > 0
+    const activeStock = await prisma.stock.findFirst({
+      where: { locationId: id, quantity: { gt: 0 }, deletedAt: null },
+    });
+
+    if (activeStock) {
+      throw new AppError(
+        400,
+        "Cannot delete location because it still has active physical stock.",
+      );
+    }
+
+    await stockRepository.deleteLocation(id);
+    return true;
+  }
+
+  // Stock Queries
+  async getStocks(params: {
+    page?: number;
+    limit?: number;
+    productId?: string;
+    locationId?: string;
+    searchTerm?: string;
+  }) {
+    const page = params.page ?? 1;
+    const limit = params.limit ?? 10;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.StockWhereInput = { deletedAt: null };
+
+    if (params.locationId) {
+      where.locationId = params.locationId;
+    }
+    if (params.productId) {
+      where.productId = params.productId;
+    }
+    if (params.searchTerm) {
+      where.OR = [
+        {
+          product: {
+            name: { contains: params.searchTerm, mode: "insensitive" },
+          },
+        },
+        {
+          product: {
+            sku: { contains: params.searchTerm, mode: "insensitive" },
+          },
+        },
+        {
+          location: {
+            name: { contains: params.searchTerm, mode: "insensitive" },
+          },
+        },
+      ];
+    }
+
+    const [data, total] = await Promise.all([
+      stockRepository.findManyStocks({
+        where,
+        skip,
+        take: limit,
+        orderBy: { updatedAt: "desc" },
+      }),
+      stockRepository.countStocks(where),
+    ]);
+
+    return {
+      data,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
+    };
+  }
+
+  async getStockByProductAndLocation(productId: string, locationId: string) {
+    const stock = await stockRepository.findStock(productId, locationId);
+    if (!stock) {
+      // Return a virtual empty stock mapping Odoo behavior
+      const product = await prisma.product.findFirst({
+        where: { id: productId },
+      });
+      const location = await prisma.location.findFirst({
+        where: { id: locationId },
+      });
+      if (!product || !location) {
+        throw new AppError(404, "Product or Location not found");
+      }
+      return {
+        productId,
+        locationId,
+        quantity: 0,
+        reservedQuantity: 0,
+        product,
+        location,
+      };
+    }
+    return stock;
+  }
+
+  // Reorder & Low Stock Configuration
+  async upsertLowStockConfig(payload: any, userId: string) {
+    const product = await prisma.product.findFirst({
+      where: { id: payload.productId, deletedAt: null },
+    });
+    if (!product) throw new AppError(404, "Product not found");
+
+    if (payload.locationId) {
+      const location = await prisma.location.findFirst({
+        where: { id: payload.locationId, deletedAt: null },
+      });
+      if (!location) throw new AppError(404, "Location not found");
+    }
+
+    const targetLocationId = payload.locationId ?? null;
+
+    const existing = await prisma.lowStockConfig.findUnique({
+      where: {
+        productId_locationId: {
+          productId: payload.productId,
+          locationId: targetLocationId,
+        },
+      },
+    });
+
+    if (existing) {
+      return prisma.lowStockConfig.update({
+        where: { id: existing.id },
+        data: {
+          minimumQuantity: payload.minimumQuantity,
+          reorderQuantity: payload.reorderQuantity,
+          updatedBy: userId,
+        },
+      });
+    } else {
+      return prisma.lowStockConfig.create({
+        data: {
+          productId: payload.productId,
+          locationId: targetLocationId,
+          minimumQuantity: payload.minimumQuantity,
+          reorderQuantity: payload.reorderQuantity,
+          createdBy: userId,
+        },
+      });
+    }
+  }
+
+  // Get alerts list
+  async getLowStockAlerts(
+    params: { page?: number; limit?: number; locationId?: string } = {},
+  ) {
+    const page = params.page ?? 1;
+    const limit = params.limit ?? 10;
+
+    const whereStock: Prisma.StockWhereInput = { deletedAt: null };
+    if (params.locationId) {
+      whereStock.locationId = params.locationId;
+    }
+
+    const allStocks = await prisma.stock.findMany({
+      where: whereStock,
+      include: {
+        product: {
+          include: {
+            lowStockConfigs: { where: { deletedAt: null } },
+          },
+        },
+        location: true,
+      },
+    });
+
+    // Filter stocks below threshold
+    const lowStockItems = allStocks.filter((stock) => {
+      let config = stock.product.lowStockConfigs.find(
+        (c) => c.locationId === stock.locationId,
+      );
+      if (!config) {
+        config = stock.product.lowStockConfigs.find(
+          (c) => c.locationId === null,
+        );
+      }
+      const limitQty = config ? config.minimumQuantity : 10; // Default safety threshold
+      return stock.quantity <= limitQty;
+    });
+
+    // Pagination in-memory
+    const total = lowStockItems.length;
+    const paginated = lowStockItems
+      .slice((page - 1) * limit, page * limit)
+      .map((stock) => {
+        let config = stock.product.lowStockConfigs.find(
+          (c) => c.locationId === stock.locationId,
+        );
+        if (!config) {
+          config = stock.product.lowStockConfigs.find(
+            (c) => c.locationId === null,
+          );
+        }
+        return {
+          productId: stock.productId,
+          productName: stock.product.name,
+          sku: stock.product.sku,
+          locationId: stock.locationId,
+          locationName: stock.location.name,
+          currentQuantity: stock.quantity,
+          minimumQuantity: config ? config.minimumQuantity : 10,
+          reorderQuantity: config ? config.reorderQuantity : 50,
+        };
+      });
+
+    return {
+      data: paginated,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
+    };
+  }
+
+  // Reorder Suggestions
+  async getReorderSuggestions(
+    params: { page?: number; limit?: number; locationId?: string } = {},
+  ) {
+    const alerts = await this.getLowStockAlerts(params);
+    const suggestions = alerts.data.map((alert) => ({
+      productId: alert.productId,
+      productName: alert.productName,
+      sku: alert.sku,
+      locationId: alert.locationId,
+      locationName: alert.locationName,
+      currentQuantity: alert.currentQuantity,
+      reorderThreshold: alert.minimumQuantity,
+      suggestedReorderQuantity: alert.reorderQuantity,
+    }));
+
+    return {
+      data: suggestions,
+      meta: alerts.meta,
+    };
+  }
+
+  // 13. Reports Services
+  async getCurrentStockReport(locationId?: string) {
+    const where: Prisma.StockWhereInput = { deletedAt: null };
+    if (locationId) where.locationId = locationId;
+
+    const stocks = await prisma.stock.findMany({
+      where,
+      include: {
+        product: {
+          select: {
+            id: true,
+            name: true,
+            sku: true,
+            Baseprice: true,
+            finalPrice: true,
+          },
+        },
+        location: {
+          select: { id: true, name: true, code: true },
+        },
+      },
+      orderBy: { product: { name: "asc" } },
+    });
+
+    const totalUniqueProducts = new Set(stocks.map((s) => s.productId)).size;
+    const totalPhysicalQuantity = stocks.reduce(
+      (acc, s) => acc + s.quantity,
+      0,
+    );
+    const totalReservedQuantity = stocks.reduce(
+      (acc, s) => acc + s.reservedQuantity,
+      0,
+    );
+    const totalValueCost = stocks.reduce(
+      (acc, s) => acc + s.quantity * Number(s.product.Baseprice),
+      0,
+    );
+    const totalValueRetail = stocks.reduce(
+      (acc, s) => acc + s.quantity * Number(s.product.finalPrice),
+      0,
+    );
+
+    // Location breakdown
+    const locationMap = new Map<
+      string,
+      {
+        name: string;
+        code: string;
+        productSet: Set<string>;
+        quantity: number;
+        reservedQty: number;
+        costValuation: number;
+        retailValuation: number;
+      }
+    >();
+
+    // Product breakdown
+    const productMap = new Map<
+      string,
+      {
+        productId: string;
+        productName: string;
+        sku: string | null;
+        totalQty: number;
+        totalReserved: number;
+        costValuation: number;
+        retailValuation: number;
+        locationCount: number;
+      }
+    >();
+
+    for (const s of stocks) {
+      // Location
+      if (!locationMap.has(s.locationId)) {
+        locationMap.set(s.locationId, {
+          name: s.location.name,
+          code: s.location.code,
+          productSet: new Set(),
+          quantity: 0,
+          reservedQty: 0,
+          costValuation: 0,
+          retailValuation: 0,
+        });
+      }
+      const loc = locationMap.get(s.locationId)!;
+      loc.productSet.add(s.productId);
+      loc.quantity += s.quantity;
+      loc.reservedQty += s.reservedQuantity;
+      loc.costValuation += s.quantity * Number(s.product.Baseprice);
+      loc.retailValuation += s.quantity * Number(s.product.finalPrice);
+
+      // Product
+      if (!productMap.has(s.productId)) {
+        productMap.set(s.productId, {
+          productId: s.productId,
+          productName: s.product.name,
+          sku: s.product.sku,
+          totalQty: 0,
+          totalReserved: 0,
+          costValuation: 0,
+          retailValuation: 0,
+          locationCount: 0,
+        });
+      }
+      const prod = productMap.get(s.productId)!;
+      prod.totalQty += s.quantity;
+      prod.totalReserved += s.reservedQuantity;
+      prod.costValuation += s.quantity * Number(s.product.Baseprice);
+      prod.retailValuation += s.quantity * Number(s.product.finalPrice);
+      prod.locationCount += 1;
+    }
+
+    return {
+      summary: {
+        totalUniqueProducts,
+        totalPhysicalQuantity,
+        totalReservedQuantity,
+        totalValueCost: +totalValueCost.toFixed(2),
+        totalValueRetail: +totalValueRetail.toFixed(2),
+      },
+      locationBreakdown: [...locationMap.values()].map((l) => ({
+        name: l.name,
+        code: l.code,
+        distinctProducts: l.productSet.size,
+        quantity: l.quantity,
+        reservedQty: l.reservedQty,
+        costValuation: +l.costValuation.toFixed(2),
+        retailValuation: +l.retailValuation.toFixed(2),
+      })),
+      productBreakdown: [...productMap.values()].map((p) => ({
+        productId: p.productId,
+        productName: p.productName,
+        sku: p.sku,
+        totalQty: p.totalQty,
+        totalReserved: p.totalReserved,
+        costValuation: +p.costValuation.toFixed(2),
+        retailValuation: +p.retailValuation.toFixed(2),
+        locationCount: p.locationCount,
+      })),
+    };
+  }
+
+  async getMovementReport(params: {
+    startDate?: string;
+    endDate?: string;
+    locationId?: string;
+    productId?: string;
+    movementType?: any;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = params.page ?? 1;
+    const limit = params.limit ?? 10;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.StockMovementWhereInput = {};
+
+    if (params.locationId) where.locationId = params.locationId;
+    if (params.productId) where.productId = params.productId;
+    if (params.movementType) where.movementType = params.movementType;
+    if (params.startDate || params.endDate) {
+      where.createdAt = {};
+      if (params.startDate) where.createdAt.gte = new Date(params.startDate);
+      if (params.endDate) where.createdAt.lte = new Date(params.endDate);
+    }
+
+    const [data, total] = await Promise.all([
+      prisma.stockMovement.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: "desc" },
+        include: {
+          product: { select: { id: true, name: true, sku: true } },
+          location: { select: { id: true, name: true, code: true } },
+          performer: { select: { id: true, email: true } },
+        },
+      }),
+      prisma.stockMovement.count({ where }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
+    };
+  }
+
+  async getTransferReport(params: {
+    startDate?: string;
+    endDate?: string;
+    sourceLocationId?: string;
+    destinationLocationId?: string;
+    status?: any;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = params.page ?? 1;
+    const limit = params.limit ?? 10;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.StockTransferWhereInput = { deletedAt: null };
+
+    if (params.sourceLocationId)
+      where.sourceLocationId = params.sourceLocationId;
+    if (params.destinationLocationId)
+      where.destinationLocationId = params.destinationLocationId;
+    if (params.status) where.status = params.status;
+    if (params.startDate || params.endDate) {
+      where.createdAt = {};
+      if (params.startDate) where.createdAt.gte = new Date(params.startDate);
+      if (params.endDate) where.createdAt.lte = new Date(params.endDate);
+    }
+
+    const [data, total] = await Promise.all([
+      prisma.stockTransfer.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: "desc" },
+        include: {
+          sourceLocation: { select: { id: true, name: true } },
+          destinationLocation: { select: { id: true, name: true } },
+          creator: { select: { id: true, email: true } },
+        },
+      }),
+      prisma.stockTransfer.count({ where }),
+    ]);
+
+    return {
+      data,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
+    };
+  }
+
+  async getDamageReport(params: {
+    startDate?: string;
+    endDate?: string;
+    locationId?: string;
+    reason?: any;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = params.page ?? 1;
+    const limit = params.limit ?? 10;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.DamageWhereInput = { deletedAt: null };
+
+    if (params.locationId) where.locationId = params.locationId;
+    if (params.startDate || params.endDate) {
+      where.createdAt = {};
+      if (params.startDate) where.createdAt.gte = new Date(params.startDate);
+      if (params.endDate) where.createdAt.lte = new Date(params.endDate);
+    }
+    if (params.reason) {
+      where.items = {
+        some: { reason: params.reason },
+      };
+    }
+
+    const [data, total] = await Promise.all([
+      prisma.damage.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: "desc" },
+        include: {
+          location: { select: { id: true, name: true } },
+          creator: { select: { id: true, email: true } },
+          items: {
+            include: {
+              product: {
+                select: { id: true, name: true, sku: true, Baseprice: true },
+              },
+            },
+          },
+        },
+      }),
+      prisma.damage.count({ where }),
+    ]);
+
+    // Format output including total cost loss calculations
+    const formatted = data.map((d) => {
+      const itemsTotalLoss = d.items.reduce(
+        (sum, item) => sum + item.quantity * item.product.Baseprice,
+        0,
+      );
+      return {
+        ...d,
+        totalLossValuation: Number(itemsTotalLoss.toFixed(2)),
+      };
+    });
+
+    return {
+      data: formatted,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
+    };
+  }
+
+  async getAdjustmentReport(params: {
+    startDate?: string;
+    endDate?: string;
+    locationId?: string;
+    status?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = params.page ?? 1;
+    const limit = params.limit ?? 20;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.StockAdjustmentWhereInput = { deletedAt: null };
+    if (params.locationId) where.locationId = params.locationId;
+    if (params.status) where.status = params.status as any;
+    if (params.startDate || params.endDate) {
+      where.createdAt = {};
+      if (params.startDate)
+        (where.createdAt as any).gte = new Date(params.startDate);
+      if (params.endDate)
+        (where.createdAt as any).lte = new Date(params.endDate);
+    }
+
+    const [data, total] = await Promise.all([
+      prisma.stockAdjustment.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: "desc" },
+        include: {
+          location: { select: { id: true, name: true } },
+          creator: { select: { id: true, email: true } },
+          items: {
+            include: {
+              product: {
+                select: { id: true, name: true, sku: true, Baseprice: true },
+              },
+            },
+          },
+        },
+      }),
+      prisma.stockAdjustment.count({ where }),
+    ]);
+
+    const formatted = data.map((adj) => {
+      const totalAdded = adj.items.reduce(
+        (s, i) => (i.quantityChanged > 0 ? s + i.quantityChanged : s),
+        0,
+      );
+      const totalRemoved = adj.items.reduce(
+        (s, i) => (i.quantityChanged < 0 ? s + Math.abs(i.quantityChanged) : s),
+        0,
+      );
+      return {
+        id: adj.id,
+        adjustmentNumber: (adj as any).adjustmentNumber ?? null,
+        status: adj.status,
+        reason: (adj as any).reason ?? null,
+        locationId: adj.locationId,
+        locationName: adj.location.name,
+        totalItemLines: adj.items.length,
+        totalAdded,
+        totalRemoved,
+        createdBy: adj.creator?.email ?? null,
+        createdAt: adj.createdAt,
+        items: adj.items.map((i) => ({
+          productName: i.product.name,
+          sku: i.product.sku,
+          quantityChanged: i.quantityChanged,
+          reason: (i as any).reason ?? null,
+        })),
+      };
+    });
+
+    return {
+      data: formatted,
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
+    };
+  }
+
+  async getInventoryDashboardSummary() {
+    const [
+      stocks,
+      lowStockResult,
+      recentMovements,
+      activePOCount,
+      activeTransferCount,
+      locationCount,
+      pendingAdjCount,
+      pendingDamageCount,
+    ] = await Promise.all([
+      prisma.stock.findMany({
+        where: { deletedAt: null },
+        include: {
+          product: { select: { Baseprice: true, finalPrice: true } },
+        },
+      }),
+      this.getLowStockAlerts({ page: 1, limit: 6 }),
+      prisma.stockMovement.findMany({
+        take: 6,
+        orderBy: { createdAt: "desc" },
+        include: {
+          product: { select: { name: true, sku: true } },
+          location: { select: { name: true } },
+        },
+      }),
+      prisma.purchaseOrder.count({
+        where: { deletedAt: null, status: { in: ["DRAFT", "PENDING"] } },
+      }),
+      prisma.stockTransfer.count({
+        where: {
+          deletedAt: null,
+          status: { in: ["DRAFT", "PENDING", "APPROVED", "IN_TRANSIT"] },
+        },
+      }),
+      prisma.location.count({ where: { deletedAt: null } }),
+      prisma.stockAdjustment.count({
+        where: { deletedAt: null, status: "DRAFT" },
+      }),
+      prisma.damage.count({ where: { deletedAt: null, status: "DRAFT" } }),
+    ]);
+
+    const totalUniqueProducts = new Set(stocks.map((s) => s.productId)).size;
+    const totalPhysicalQuantity = stocks.reduce(
+      (acc, s) => acc + s.quantity,
+      0,
+    );
+    const totalReservedQuantity = stocks.reduce(
+      (acc, s) => acc + s.reservedQuantity,
+      0,
+    );
+    const totalValueCost = stocks.reduce(
+      (acc, s) => acc + s.quantity * Number(s.product.Baseprice),
+      0,
+    );
+    const totalValueRetail = stocks.reduce(
+      (acc, s) => acc + s.quantity * Number(s.product.finalPrice),
+      0,
+    );
+
+    return {
+      summary: {
+        totalUniqueProducts,
+        totalPhysicalQuantity,
+        totalReservedQuantity,
+        availableQuantity: totalPhysicalQuantity - totalReservedQuantity,
+        totalValueCost: +totalValueCost.toFixed(2),
+        totalValueRetail: +totalValueRetail.toFixed(2),
+        locationCount,
+        activePOCount,
+        activeTransferCount,
+        lowStockCount: lowStockResult.meta.total,
+        pendingAdjCount,
+        pendingDamageCount,
+      },
+      recentMovements,
+      topLowStockAlerts: lowStockResult.data,
+    };
+  }
+}
+
+export const stockService = new StockService();

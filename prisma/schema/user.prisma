@@ -17,9 +17,31 @@ model User {
 
   productReviews ProductReview[]
 
-  stocks Stock[]
-
   posOrders PosOrder[]
+
+  supplierPaymentsCreated SupplierPayment[] @relation("SupplierPaymentCreatedBy")
+  supplierPaymentsUpdated SupplierPayment[] @relation("SupplierPaymentUpdatedBy")
+  suppliersCreated        Supplier[]        @relation("SupplierCreatedBy")
+  suppliersUpdated        Supplier[]        @relation("SupplierUpdatedBy")
+  locationsCreated        Location[]        @relation("LocationCreatedBy")
+  locationsUpdated        Location[]        @relation("LocationUpdatedBy")
+  purchaseOrdersCreated   PurchaseOrder[]   @relation("POCreatedBy")
+  purchaseOrdersUpdated   PurchaseOrder[]   @relation("POUpdatedBy")
+  goodsReceivesCreated    GoodsReceive[]    @relation("GRNCreatedBy")
+  goodsReceivesUpdated    GoodsReceive[]    @relation("GRNUpdatedBy")
+  stockMovements          StockMovement[]   @relation("MovementPerformedBy")
+  stockTransfersCreated   StockTransfer[]   @relation("TransferCreatedBy")
+  stockTransfersUpdated   StockTransfer[]   @relation("TransferUpdatedBy")
+  supplierReturnsCreated  SupplierReturn[]  @relation("SRCreatedBy")
+  supplierReturnsUpdated  SupplierReturn[]  @relation("SRUpdatedBy")
+  customerReturnsCreated  CustomerReturn[]  @relation("CRCreatedBy")
+  customerReturnsUpdated  CustomerReturn[]  @relation("CRUpdatedBy")
+  stockAdjustmentsCreated StockAdjustment[] @relation("AdjustmentCreatedBy")
+  stockAdjustmentsUpdated StockAdjustment[] @relation("AdjustmentUpdatedBy")
+  damagesCreated          Damage[]          @relation("DamageCreatedBy")
+  damagesUpdated          Damage[]          @relation("DamageUpdatedBy")
+  lowStockConfigsCreated  LowStockConfig[]  @relation("LowStockConfigCreatedBy")
+  lowStockConfigsUpdated  LowStockConfig[]  @relation("LowStockConfigUpdatedBy")
 }
 
 model Admin {

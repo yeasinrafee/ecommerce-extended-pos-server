@@ -29,6 +29,12 @@ import { stockRoutes } from '../modules/stock/stock.route.js';
 import { stockTransferRoutes } from '../modules/stock-transfer/stock-transfer.route.js';
 import { posRoutes } from '../modules/pos/pos.route.js';
 import { bankRoutes } from '../modules/bank/bank.route.js';
+import { purchaseOrderRoutes } from '../modules/purchase-order/purchase-order.route.js';
+import { goodsReceiveRoutes } from '../modules/goods-receive/goods-receive.route.js';
+import { supplierReturnRoutes } from '../modules/supplier-return/supplier-return.route.js';
+import { customerReturnRoutes } from '../modules/customer-return/customer-return.route.js';
+import { stockAdjustmentRoutes } from '../modules/stock-adjustment/stock-adjustment.route.js';
+import { damageRoutes } from '../modules/damage/damage.route.js';
 const router = Router();
 
 router.use('/products', productRoutes);
@@ -60,6 +66,12 @@ router.use('/stocks', stockRoutes);
 router.use('/stock-transfers', stockTransferRoutes);
 router.use('/pos', posRoutes);
 router.use('/banks', bankRoutes);
+router.use('/purchase-orders', purchaseOrderRoutes);
+router.use('/goods-receives', goodsReceiveRoutes);
+router.use('/supplier-returns', supplierReturnRoutes);
+router.use('/customer-returns', customerReturnRoutes);
+router.use('/stock-adjustments', stockAdjustmentRoutes);
+router.use('/damages', damageRoutes);
 
 router.use('/dashboard', dashboardRoutes);
 

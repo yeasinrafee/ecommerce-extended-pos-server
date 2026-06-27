@@ -1,83 +1,487 @@
-model Stock {
-	id                   String         @id @default(uuid())
-	userId               String
-	user                 User           @relation(fields: [userId], references: [id])
-	storeId              String
-	store                Store          @relation(fields: [storeId], references: [id])
-	supplierId           Int
-	supplier             Supplier       @relation(fields: [supplierId], references: [id])
-	invoiceNumber        String         @unique
-	note                 String?
-	totalProductQuantity Int            @default(0)
-	grandTotal           Float          @default(0)
-	orderStatus          OrderStatus    @default(PENDING)
-	createdAt            DateTime       @default(now())
-	updatedAt            DateTime       @updatedAt
-	deletedAt            DateTime?
+model SupplierPayment {
+  id            String        @id @default(uuid())
+  supplierId    Int
+  supplier      Supplier      @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  amount        Float
+  paymentDate   DateTime      @default(now())
+  paymentMethod PaymentMethod
+  referenceNo   String?
+  note          String?
+  
+  createdBy     String
+  creator       User          @relation("SupplierPaymentCreatedBy", fields: [createdBy], references: [id])
+  updatedBy     String?
+  updater       User?         @relation("SupplierPaymentUpdatedBy", fields: [updatedBy], references: [id])
 
-	stockProducts StockProduct[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+  deletedAt     DateTime?
 
-	@@index([storeId])
-	@@index([supplierId])
-	@@index([userId])
-	@@index([createdAt])
+  @@index([supplierId])
+  @@index([paymentDate])
+  @@map("supplier_payments")
 }
 
-model StockProduct {
-	id          String   @id @default(uuid())
-	stockId     String
-	stock       Stock    @relation(fields: [stockId], references: [id])
-	productId   String
-	product     Product  @relation(fields: [productId], references: [id])
-	quantity    Int
-	purchasePrice Float
-	totalPrice  Float
-	createdAt   DateTime @default(now())
-	updatedAt   DateTime @updatedAt
-	deletedAt   DateTime?
+model Location {
+  id          String       @id @default(uuid())
+  name        String       @unique
+  code        String       @unique
+  type        LocationType @default(STORE)
+  address     String?
+  phone       String?
+  status      Status       @default(ACTIVE)
+  
+  createdBy   String?
+  creator     User?        @relation("LocationCreatedBy", fields: [createdBy], references: [id])
+  updatedBy   String?
+  updater     User?        @relation("LocationUpdatedBy", fields: [updatedBy], references: [id])
 
-	@@index([stockId])
-	@@index([productId])
-	@@index([createdAt])
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
+  deletedAt   DateTime?
+
+  stores               Store?
+  stocks               Stock[]
+  stockTransfersFrom   StockTransfer[] @relation("StockTransferSource")
+  stockTransfersTo     StockTransfer[] @relation("StockTransferDestination")
+  purchaseOrders       PurchaseOrder[]
+  goodsReceives        GoodsReceive[]
+  stockMovements       StockMovement[]
+  supplierReturns      SupplierReturn[]
+  customerReturns      CustomerReturn[]
+  stockAdjustments     StockAdjustment[]
+  damages              Damage[]
+  lowStockConfigs      LowStockConfig[]
+
+  @@map("locations")
+}
+
+model PurchaseOrder {
+  id             String              @id @default(uuid())
+  poNumber       String              @unique
+  supplierId     Int
+  supplier       Supplier            @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  locationId     String
+  location       Location            @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  orderDate      DateTime
+  expectedDate   DateTime?
+  status         PurchaseOrderStatus @default(DRAFT)
+  
+  totalAmount    Float               @default(0)
+  taxAmount      Float               @default(0)
+  discountAmount Float               @default(0)
+  netAmount      Float               @default(0)
+  
+  notes          String?
+  
+  createdBy      String
+  creator        User                @relation("POCreatedBy", fields: [createdBy], references: [id])
+  updatedBy      String?
+  updater        User?               @relation("POUpdatedBy", fields: [updatedBy], references: [id])
+
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  deletedAt      DateTime?
+
+  items          PurchaseOrderItem[]
+  goodsReceives  GoodsReceive[]
+
+  @@index([supplierId])
+  @@index([locationId])
+  @@index([poNumber])
+  @@map("purchase_orders")
+}
+
+model PurchaseOrderItem {
+  id              String        @id @default(uuid())
+  purchaseOrderId String
+  purchaseOrder   PurchaseOrder @relation(fields: [purchaseOrderId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product       @relation(fields: [productId], references: [id], onDelete: Restrict)
+  
+  quantity        Int
+  receivedQuantity Int          @default(0)
+  unitPrice       Float
+  taxPercent      Float         @default(0)
+  taxAmount       Float         @default(0)
+  discountPercent Float         @default(0)
+  discountAmount  Float         @default(0)
+  totalAmount     Float
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  @@index([purchaseOrderId])
+  @@index([productId])
+  @@map("purchase_order_items")
+}
+
+model GoodsReceive {
+  id              String             @id @default(uuid())
+  grnNumber       String             @unique
+  purchaseOrderId String?
+  purchaseOrder   PurchaseOrder?     @relation(fields: [purchaseOrderId], references: [id], onDelete: SetNull)
+  supplierId      Int
+  supplier        Supplier           @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  locationId      String
+  location        Location           @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  
+  receiveDate     DateTime           @default(now())
+  status          GoodsReceiveStatus @default(RECEIVED)
+  
+  billNumber      String?
+  billAmount      Float?
+  notes           String?
+  
+  createdBy       String
+  creator         User               @relation("GRNCreatedBy", fields: [createdBy], references: [id])
+  updatedBy       String?
+  updater         User?              @relation("GRNUpdatedBy", fields: [updatedBy], references: [id])
+
+  createdAt       DateTime           @default(now())
+  updatedAt       DateTime           @updatedAt
+  deletedAt       DateTime?
+
+  items           GoodsReceiveItem[]
+
+  @@index([purchaseOrderId])
+  @@index([supplierId])
+  @@index([locationId])
+  @@index([grnNumber])
+  @@map("goods_receives")
+}
+
+model GoodsReceiveItem {
+  id             String       @id @default(uuid())
+  goodsReceiveId String
+  goodsReceive   GoodsReceive @relation(fields: [goodsReceiveId], references: [id], onDelete: Cascade)
+  productId      String
+  product        Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  
+  quantityOrdered Int         @default(0)
+  quantityReceived Int
+  quantityAccepted Int
+  quantityRejected Int        @default(0)
+  
+  unitPrice      Float
+  totalPrice     Float
+  
+  batchNumber    String?
+  expiryDate     DateTime?
+  
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  @@index([goodsReceiveId])
+  @@index([productId])
+  @@map("goods_receive_items")
+}
+
+model Stock {
+  id               String    @id @default(uuid())
+  productId        String
+  product          Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  locationId       String
+  location         Location  @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  
+  quantity         Int       @default(0)
+  reservedQuantity Int       @default(0)
+  
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+
+  @@unique([productId, locationId])
+  @@index([productId])
+  @@index([locationId])
+  @@map("stocks")
+}
+
+model StockMovement {
+  id               String            @id @default(uuid())
+  productId        String
+  product          Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+  locationId       String
+  location         Location          @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  movementType     StockMovementType
+  
+  previousQuantity Int
+  quantityChanged  Int
+  currentQuantity  Int
+  
+  referenceType    String
+  referenceId      String
+  
+  performedBy      String
+  performer        User              @relation("MovementPerformedBy", fields: [performedBy], references: [id])
+  
+  notes            String?
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+
+  @@index([productId])
+  @@index([locationId])
+  @@index([referenceType, referenceId])
+  @@index([createdAt])
+  @@map("stock_movements")
 }
 
 model StockTransfer {
-	id            String                @id @default(uuid())
-	invoiceNumber String                @unique
-	fromStoreId   String
-	fromStore     Store                 @relation("StockTransferFrom", fields: [fromStoreId], references: [id])
-	toStoreId     String
-	toStore       Store                 @relation("StockTransferTo", fields: [toStoreId], references: [id])
-	orderStatus   OrderStatus   @default(PENDING)
-	note		  String?
-	quantity      Int
-	createdAt     DateTime              @default(now())
-	updatedAt     DateTime              @updatedAt
-	deletedAt     DateTime?
+  id                    String              @id @default(uuid())
+  transferNumber        String              @unique
+  sourceLocationId      String
+  sourceLocation        Location            @relation("StockTransferSource", fields: [sourceLocationId], references: [id], onDelete: Restrict)
+  destinationLocationId String
+  destinationLocation   Location            @relation("StockTransferDestination", fields: [destinationLocationId], references: [id], onDelete: Restrict)
+  
+  status                StockTransferStatus @default(DRAFT)
+  transferDate          DateTime?
+  receivedDate          DateTime?
+  
+  notes                 String?
+  
+  createdBy             String
+  creator               User                @relation("TransferCreatedBy", fields: [createdBy], references: [id])
+  updatedBy             String?
+  updater               User?               @relation("TransferUpdatedBy", fields: [updatedBy], references: [id])
 
-	stockProductTransfers StockProductTransfer[]
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  deletedAt             DateTime?
 
-	@@index([fromStoreId])
-	@@index([toStoreId])
-	@@index([createdAt])
+  items                 StockTransferItem[]
+
+  @@index([sourceLocationId])
+  @@index([destinationLocationId])
+  @@index([transferNumber])
+  @@map("stock_transfers")
 }
 
-model StockProductTransfer {
-	id              String        @id @default(uuid())
-	stockTransferId String
-	stockTransfer   StockTransfer @relation(fields: [stockTransferId], references: [id])
-	productId       String
-	product         Product       @relation(fields: [productId], references: [id])
-	quantity        Int
-	purchasePrice   Float
-	totalPrice      Float
-	createdAt       DateTime      @default(now())
-	updatedAt       DateTime      @updatedAt
-	deletedAt       DateTime?
+model StockTransferItem {
+  id              String        @id @default(uuid())
+  stockTransferId String
+  stockTransfer   StockTransfer @relation(fields: [stockTransferId], references: [id], onDelete: Cascade)
+  productId       String
+  product         Product       @relation(fields: [productId], references: [id], onDelete: Restrict)
+  
+  quantity        Int
+  receivedQuantity Int          @default(0)
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
 
-	@@index([stockTransferId])
-	@@index([productId])
-	@@index([createdAt])
+  @@index([stockTransferId])
+  @@index([productId])
+  @@map("stock_transfer_items")
 }
 
+model SupplierReturn {
+  id             String             @id @default(uuid())
+  returnNumber   String             @unique
+  supplierId     Int
+  supplier       Supplier           @relation(fields: [supplierId], references: [id], onDelete: Restrict)
+  locationId     String
+  location       Location           @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  
+  returnDate     DateTime           @default(now())
+  status         SupplierReturnStatus @default(COMPLETED)
+  
+  totalAmount    Float              @default(0)
+  notes          String?
+  
+  createdBy      String
+  creator        User               @relation("SRCreatedBy", fields: [createdBy], references: [id])
+  updatedBy      String?
+  updater        User?              @relation("SRUpdatedBy", fields: [updatedBy], references: [id])
 
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
+  deletedAt      DateTime?
+
+  items          SupplierReturnItem[]
+
+  @@index([supplierId])
+  @@index([locationId])
+  @@index([returnNumber])
+  @@map("supplier_returns")
+}
+
+model SupplierReturnItem {
+  id               String         @id @default(uuid())
+  supplierReturnId String
+  supplierReturn   SupplierReturn @relation(fields: [supplierReturnId], references: [id], onDelete: Cascade)
+  productId        String
+  product          Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
+  
+  quantity         Int
+  unitPrice        Float
+  totalPrice       Float
+  
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([supplierReturnId])
+  @@index([productId])
+  @@map("supplier_return_items")
+}
+
+model CustomerReturn {
+  id                String               @id @default(uuid())
+  returnNumber      String               @unique
+  
+  locationId        String
+  location          Location             @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  
+  returnDate        DateTime             @default(now())
+  status            CustomerReturnStatus @default(PENDING)
+  
+  notes             String?
+  
+  createdBy         String
+  creator           User                 @relation("CRCreatedBy", fields: [createdBy], references: [id])
+  updatedBy         String?
+  updater           User?                @relation("CRUpdatedBy", fields: [updatedBy], references: [id])
+
+  createdAt         DateTime             @default(now())
+  updatedAt         DateTime             @updatedAt
+  deletedAt         DateTime?
+
+  items             CustomerReturnItem[]
+
+  @@index([locationId])
+  @@index([returnNumber])
+  @@map("customer_returns")
+}
+
+model CustomerReturnItem {
+  id               String         @id @default(uuid())
+  customerReturnId String
+  customerReturn   CustomerReturn @relation(fields: [customerReturnId], references: [id], onDelete: Cascade)
+  productId        String
+  product          Product        @relation(fields: [productId], references: [id], onDelete: Restrict)
+  
+  quantity         Int
+  
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+
+  @@index([customerReturnId])
+  @@index([productId])
+  @@map("customer_return_items")
+}
+
+model StockAdjustment {
+  id               String                 @id @default(uuid())
+  adjustmentNumber String                 @unique
+  locationId       String
+  location         Location               @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  adjustmentDate   DateTime               @default(now())
+  
+  status           StockAdjustmentStatus  @default(COMPLETED)
+  reason           String?
+  
+  createdBy        String
+  creator          User                   @relation("AdjustmentCreatedBy", fields: [createdBy], references: [id])
+  updatedBy        String?
+  updater          User?                  @relation("AdjustmentUpdatedBy", fields: [updatedBy], references: [id])
+
+  createdAt        DateTime               @default(now())
+  updatedAt        DateTime               @updatedAt
+  deletedAt        DateTime?
+
+  items            StockAdjustmentItem[]
+
+  @@index([locationId])
+  @@index([adjustmentNumber])
+  @@map("stock_adjustments")
+}
+
+model StockAdjustmentItem {
+  id                String          @id @default(uuid())
+  stockAdjustmentId String
+  stockAdjustment   StockAdjustment @relation(fields: [stockAdjustmentId], references: [id], onDelete: Cascade)
+  productId         String
+  product           Product         @relation(fields: [productId], references: [id], onDelete: Restrict)
+  
+  previousQuantity  Int
+  quantityChanged   Int
+  currentQuantity   Int
+  
+  reason            String?
+  
+  createdAt         DateTime        @default(now())
+  updatedAt         DateTime        @updatedAt
+
+  @@index([stockAdjustmentId])
+  @@index([productId])
+  @@map("stock_adjustment_items")
+}
+
+model Damage {
+  id           String       @id @default(uuid())
+  damageNumber String       @unique
+  locationId   String
+  location     Location     @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  damageDate   DateTime     @default(now())
+  status       DamageStatus @default(COMPLETED)
+  
+  notes        String?
+  
+  createdBy    String
+  creator      User         @relation("DamageCreatedBy", fields: [createdBy], references: [id])
+  updatedBy    String?
+  updater      User?        @relation("DamageUpdatedBy", fields: [updatedBy], references: [id])
+
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+  deletedAt    DateTime?
+
+  items        DamageItem[]
+
+  @@index([locationId])
+  @@index([damageNumber])
+  @@map("damages")
+}
+
+model DamageItem {
+  id           String       @id @default(uuid())
+  damageId     String
+  damage       Damage       @relation(fields: [damageId], references: [id], onDelete: Cascade)
+  productId    String
+  product      Product      @relation(fields: [productId], references: [id], onDelete: Restrict)
+  
+  quantity     Int
+  reason       DamageReason @default(DAMAGED)
+  
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  @@index([damageId])
+  @@index([productId])
+  @@map("damage_items")
+}
+
+model LowStockConfig {
+  id              String    @id @default(uuid())
+  productId       String
+  product         Product   @relation(fields: [productId], references: [id], onDelete: Restrict)
+  locationId      String?
+  location        Location? @relation(fields: [locationId], references: [id], onDelete: Restrict)
+  
+  minimumQuantity Int       @default(10)
+  reorderQuantity Int       @default(50)
+  
+  createdBy       String
+  creator         User      @relation("LowStockConfigCreatedBy", fields: [createdBy], references: [id])
+  updatedBy       String?
+  updater         User?     @relation("LowStockConfigUpdatedBy", fields: [updatedBy], references: [id])
+
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  deletedAt       DateTime?
+
+  @@unique([productId, locationId])
+  @@index([productId])
+  @@index([locationId])
+  @@map("low_stock_configs")
+}
