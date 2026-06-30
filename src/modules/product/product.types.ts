@@ -43,7 +43,7 @@ export type CreateProductDto = {
 	image: string;
 	galleryImages: string[];
 	status: Status;
-	stockStatus: StockStatus;
+	// stockStatus is intentionally omitted — always forced to OUT_OF_STOCK by service on create
 	categoryIds: string[];
 	tagIds?: string[];
 	attributes: CreateProductAttributeDto[];
@@ -84,7 +84,7 @@ export type UpdateProductDto = {
 	image: string;
 	galleryImages: string[];
 	status: Status;
-	stockStatus: StockStatus;
+	// stockStatus is intentionally omitted — managed by GRN/inventory only
 	categoryIds: string[];
 	tagIds?: string[];
 	attributes: UpdateProductAttributeDto[];
@@ -94,13 +94,13 @@ export type UpdateProductDto = {
 
 export type PatchProductDto = {
 	status?: Status;
-	stockStatus?: StockStatus;
+	// stockStatus is NOT patchable — it is computed automatically from stock quantity
 };
 
 export type BulkPatchProductDto = {
 	ids: string[];
 	status?: Status;
-	stockStatus?: StockStatus;
+	// stockStatus is NOT bulk-patchable — it is computed automatically from stock quantity
 };
 
 export type ProductListQuery = {

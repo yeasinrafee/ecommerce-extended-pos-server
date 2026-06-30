@@ -83,6 +83,12 @@ router.get(
 
 // Reports
 router.get(
+  "/reports/activity",
+  authenticate,
+  authorizeRoles(Role.ADMIN, Role.SUPER_ADMIN),
+  asyncHandler(stockController.getActivityReport),
+);
+router.get(
   "/reports/current",
   authenticate,
   authorizeRoles(Role.ADMIN, Role.SUPER_ADMIN),

@@ -213,6 +213,30 @@ const getReorderSuggestions = async (req: Request, res: Response) => {
 };
 
 // Reports Controllers
+const getActivityReport = async (req: Request, res: Response) => {
+  const page = Number(req.query.page ?? 1);
+  const limit = Number(req.query.limit ?? 50);
+  const startDate = typeof req.query.startDate === 'string' ? req.query.startDate : undefined;
+  const endDate = typeof req.query.endDate === 'string' ? req.query.endDate : undefined;
+  const locationId = typeof req.query.locationId === 'string' ? req.query.locationId : undefined;
+  const productId = typeof req.query.productId === 'string' ? req.query.productId : undefined;
+  const movementType = typeof req.query.movementType === 'string' ? req.query.movementType : undefined;
+  const searchTerm = typeof req.query.searchTerm === 'string' ? req.query.searchTerm : undefined;
+
+  const result = await stockService.getActivityReport({
+    startDate, endDate, locationId, productId, movementType, searchTerm, page, limit,
+  });
+
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: 'Activity report generated',
+    data: result.data,
+    meta: { ...result.meta, ...result.summary } as any,
+  });
+};
+
 const getCurrentStockReport = async (req: Request, res: Response) => {
   const locationId =
     typeof req.query.locationId === "string" ? req.query.locationId : undefined;
@@ -388,4 +412,5 @@ export const stockController = {
   getDamageReport,
   getAdjustmentReport,
   getInventoryDashboardSummary,
+  getActivityReport,
 };

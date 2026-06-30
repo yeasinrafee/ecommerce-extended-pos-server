@@ -3,7 +3,7 @@ import { DiscountType, OrderStatus, PaymentMethod, PaymentStatus, Prisma, StockM
 import { AppError } from '../../common/errors/app-error.js';
 import { prisma } from '../../config/prisma.js';
 import { posPaymentService } from '../pos-payment/pos-payment.service.js';
-import { stockLedgerService } from '../stock-ledger/stock-ledger.service.js';
+import { stockLedgerService, resolveStockStatus } from '../stock-ledger/stock-ledger.service.js';
 import type { CreatePosBillInput, NormalizedPosBillLine, NormalizedPosPaymentLine, PosBillsListQuery, PosProductLineInput, PosProductsQuery, UpdatePosBillInput } from './pos.types.js';
 
 const productInclude = {
@@ -46,12 +46,12 @@ const getProducts = async ({ storeId, searchTerm }: PosProductsQuery = {}) => {
 	const where: Prisma.ProductWhereInput = {
 		deletedAt: null,
 		...(searchTerm ? { name: { contains: searchTerm, mode: 'insensitive' } } : {}),
-		...(storeId
-			? {
-				stocks: {
-					some: {
-						deletedAt: null,
-						quantity: { gt: 0 },
+		stocks: {
+			some: {
+				deletedAt: null,
+				quantity: { gt: 0 },
+				...(storeId
+					? {
 						location: {
 							stores: {
 								id: storeId,
@@ -59,9 +59,9 @@ const getProducts = async ({ storeId, searchTerm }: PosProductsQuery = {}) => {
 							}
 						}
 					}
-				}
+					: {})
 			}
-			: {})
+		}
 	};
 
 	const products = await prisma.product.findMany({
@@ -74,11 +74,20 @@ const getProducts = async ({ storeId, searchTerm }: PosProductsQuery = {}) => {
 	return products.map(transformPosProduct);
 };
 
-const getBills = async ({ page = 1, limit = 10, paymentStatus }: PosBillsListQuery = {}) => {
+const getBills = async ({ page = 1, limit = 10, paymentStatus, searchTerm }: PosBillsListQuery = {}) => {
 	const skip = (page - 1) * limit;
 	const where: Prisma.PosOrderWhereInput = {
 		deletedAt: null,
-		...(paymentStatus ? { paymentStatus } : {})
+		...(paymentStatus ? { paymentStatus } : {}),
+		...(searchTerm
+			? {
+				OR: [
+					{ invoiceNumber: { contains: searchTerm, mode: 'insensitive' } },
+					{ user: { email: { contains: searchTerm, mode: 'insensitive' } } },
+					{ user: { admins: { some: { name: { contains: searchTerm, mode: 'insensitive' } } } } },
+				]
+			}
+			: {})
 	};
 
 	const [orders, total] = await Promise.all([
@@ -1148,8 +1157,43 @@ const createBill = async (userId: string, payload: CreatePosBillInput) => {
 						]);
 					}
 
+					// Re-read updated stock and auto-resolve stockStatus
+					const updatedProduct = await tx.product.findUnique({
+						where: { id: productId },
+						select: { stock: true }
+					});
+					if (updatedProduct !== null) {
+						const resolvedStatus = await resolveStockStatus(tx, productId, updatedProduct.stock);
+						await tx.product.update({
+							where: { id: productId },
+							data: { stockStatus: resolvedStatus }
+						});
+					}
+
 					if (normalized.storeId) {
 						await decrementStoreStockProducts(tx, normalized.storeId, productId, totalQuantity, order.id, userId);
+					} else {
+						// No store selected — deduct from any location that has enough stock
+						const stockRecord = await tx.stock.findFirst({
+							where: {
+								productId,
+								deletedAt: null,
+								quantity: { gte: totalQuantity }
+							},
+							orderBy: { quantity: 'desc' }
+						});
+						if (stockRecord) {
+							await stockLedgerService.adjustStock(tx, {
+								productId,
+								locationId: stockRecord.locationId,
+								quantityChanged: -totalQuantity,
+								movementType: StockMovementType.SALE,
+								referenceType: 'PosOrder',
+								referenceId: order.id,
+								performedBy: userId,
+								notes: `POS Sale Order ${order.id} (no store)`
+							});
+						}
 					}
 				}
 
@@ -1272,8 +1316,44 @@ const updateBill = async (orderId: string, userId: string, payload: UpdatePosBil
 				data: { stock: { increment: quantity } }
 			});
 
+			// Auto-resolve stockStatus after restoring stock
+			const restoredProduct = await tx.product.findUnique({
+				where: { id: productId },
+				select: { stock: true }
+			});
+			if (restoredProduct !== null) {
+				const resolvedStatus = await resolveStockStatus(tx, productId, restoredProduct.stock);
+				await tx.product.update({
+					where: { id: productId },
+					data: { stockStatus: resolvedStatus }
+				});
+			}
+
 			if (existingOrder.storeId) {
 				await incrementStoreStockProducts(tx, existingOrder.storeId, productId, quantity, existingOrder.id, userId);
+			} else {
+				// Restore stock to the location that had the most recent sale movement
+				const saleMovement = await tx.stockMovement.findFirst({
+					where: {
+						productId,
+						referenceId: existingOrder.id,
+						movementType: StockMovementType.SALE
+					},
+					orderBy: { createdAt: 'desc' },
+					select: { locationId: true }
+				});
+				if (saleMovement) {
+					await stockLedgerService.adjustStock(tx, {
+						productId,
+						locationId: saleMovement.locationId,
+						quantityChanged: quantity,
+						movementType: StockMovementType.CUSTOMER_RETURN,
+						referenceType: 'PosOrder',
+						referenceId: existingOrder.id,
+						performedBy: userId,
+						notes: `POS Sale Return/Edit for Order ${existingOrder.id} (no store)`
+					});
+				}
 			}
 		}
 
@@ -1508,8 +1588,43 @@ const updateBill = async (orderId: string, userId: string, payload: UpdatePosBil
 				]);
 			}
 
+			// Auto-resolve stockStatus after decrement
+			const updatedProduct = await tx.product.findUnique({
+				where: { id: productId },
+				select: { stock: true }
+			});
+			if (updatedProduct !== null) {
+				const resolvedStatus = await resolveStockStatus(tx, productId, updatedProduct.stock);
+				await tx.product.update({
+					where: { id: productId },
+					data: { stockStatus: resolvedStatus }
+				});
+			}
+
 			if (normalized.storeId) {
 				await decrementStoreStockProducts(tx, normalized.storeId, productId, totalQuantity, existingOrder.id, userId);
+			} else {
+				// No store — deduct from any location with enough stock
+				const stockRecord = await tx.stock.findFirst({
+					where: {
+						productId,
+						deletedAt: null,
+						quantity: { gte: totalQuantity }
+					},
+					orderBy: { quantity: 'desc' }
+				});
+				if (stockRecord) {
+					await stockLedgerService.adjustStock(tx, {
+						productId,
+						locationId: stockRecord.locationId,
+						quantityChanged: -totalQuantity,
+						movementType: StockMovementType.SALE,
+						referenceType: 'PosOrder',
+						referenceId: existingOrder.id,
+						performedBy: userId,
+						notes: `POS Sale Order ${existingOrder.id} (no store)`
+					});
+				}
 			}
 		}
 
@@ -1772,8 +1887,44 @@ const deleteBill = async (orderId: string, userId: string) => {
 				data: { stock: { increment: quantity } }
 			});
 
+			// Auto-resolve stockStatus after restoring stock
+			const restoredProduct = await tx.product.findUnique({
+				where: { id: productId },
+				select: { stock: true }
+			});
+			if (restoredProduct !== null) {
+				const resolvedStatus = await resolveStockStatus(tx, productId, restoredProduct.stock);
+				await tx.product.update({
+					where: { id: productId },
+					data: { stockStatus: resolvedStatus }
+				});
+			}
+
 			if (existingOrder.storeId) {
 				await incrementStoreStockProducts(tx, existingOrder.storeId, productId, quantity, existingOrder.id, userId);
+			} else {
+				// Restore stock to whichever location the original sale deducted from
+				const saleMovement = await tx.stockMovement.findFirst({
+					where: {
+						productId,
+						referenceId: existingOrder.id,
+						movementType: StockMovementType.SALE
+					},
+					orderBy: { createdAt: 'desc' },
+					select: { locationId: true }
+				});
+				if (saleMovement) {
+					await stockLedgerService.adjustStock(tx, {
+						productId,
+						locationId: saleMovement.locationId,
+						quantityChanged: quantity,
+						movementType: StockMovementType.CUSTOMER_RETURN,
+						referenceType: 'PosOrder',
+						referenceId: existingOrder.id,
+						performedBy: userId,
+						notes: `POS Sale Cancellation for Order ${existingOrder.id} (no store)`
+					});
+				}
 			}
 		}
 

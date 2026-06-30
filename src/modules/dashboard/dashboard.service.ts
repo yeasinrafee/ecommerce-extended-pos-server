@@ -1,6 +1,12 @@
 import { prisma } from '../../config/prisma.js';
+import { OrderStatus } from '@prisma/client';
 
-export const getDashboardAnalyticsService = async (query: { month?: string; year?: string; startDate?: string; endDate?: string; }) => {
+export const getDashboardAnalyticsService = async (query: {
+  month?: string;
+  year?: string;
+  startDate?: string;
+  endDate?: string;
+}) => {
   let startDate: Date;
   let endDate: Date;
 
@@ -28,8 +34,8 @@ export const getDashboardAnalyticsService = async (query: { month?: string; year
     where: {
       createdAt: {
         gte: startDate,
-        lte: endDate
-      }
+        lte: endDate,
+      },
     },
     select: {
       id: true,
@@ -41,34 +47,39 @@ export const getDashboardAnalyticsService = async (query: { month?: string; year
           product: {
             select: {
               brand: { select: { id: true, name: true } },
-              categories: { select: { category: { select: { id: true, name: true } } } }
-            }
-          }
-        }
-      }
-    }
+              categories: { select: { category: { select: { id: true, name: true } } } },
+            },
+          },
+        },
+      },
+    },
   });
 
-  let totalRevenue = 0, totalOrders = 0;
-  let pendingOrdersCount = 0, pendingOrdersRevenue = 0;
-  let confirmedOrdersCount = 0, confirmedOrdersRevenue = 0;
-  let deliveredOrdersCount = 0, deliveredOrdersRevenue = 0;
+  let totalRevenue = 0;
+  let totalOrders = 0;
+  let pendingOrdersCount = 0;
+  let pendingOrdersRevenue = 0;
+  let saleOrdersCount = 0;
+  let saleOrdersRevenue = 0;
+  let returnedOrdersCount = 0;
+  let returnedOrdersRevenue = 0;
 
   for (const order of orders) {
-    if (order.orderStatus !== 'CANCELLED') {
+    // All non-returned orders contribute to total revenue
+    if (order.orderStatus !== OrderStatus.RETURNED) {
       totalRevenue += order.finalAmount;
       totalOrders += 1;
     }
-    
-    if (order.orderStatus === 'PENDING') {
+
+    if (order.orderStatus === OrderStatus.PENDING) {
       pendingOrdersCount += 1;
       pendingOrdersRevenue += order.finalAmount;
-    } else if (order.orderStatus === 'CONFIRMED') {
-      confirmedOrdersCount += 1;
-      confirmedOrdersRevenue += order.finalAmount;
-    } else if (order.orderStatus === 'DELIVERED') {
-      deliveredOrdersCount += 1;
-      deliveredOrdersRevenue += order.finalAmount;
+    } else if (order.orderStatus === OrderStatus.SALE) {
+      saleOrdersCount += 1;
+      saleOrdersRevenue += order.finalAmount;
+    } else if (order.orderStatus === OrderStatus.RETURNED) {
+      returnedOrdersCount += 1;
+      returnedOrdersRevenue += order.finalAmount;
     }
   }
 
@@ -76,7 +87,7 @@ export const getDashboardAnalyticsService = async (query: { month?: string; year
   const isDaily = durationDays <= 31;
 
   const areaChartMap = new Map<string, { revenue: number; orders: number }>();
-  
+
   if (isDaily) {
     for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
       const label = `${d.getDate()} ${d.toLocaleString('default', { month: 'short' })}`;
@@ -85,7 +96,10 @@ export const getDashboardAnalyticsService = async (query: { month?: string; year
   } else {
     let tempDate = new Date(startDate);
     while (tempDate <= endDate) {
-      const label = tempDate.toLocaleString('default', { month: 'short', year: durationDays > 365 ? '2-digit' : undefined });
+      const label = tempDate.toLocaleString('default', {
+        month: 'short',
+        year: durationDays > 365 ? '2-digit' : undefined,
+      });
       areaChartMap.set(label, { revenue: 0, orders: 0 });
       tempDate.setMonth(tempDate.getMonth() + 1);
     }
@@ -95,16 +109,20 @@ export const getDashboardAnalyticsService = async (query: { month?: string; year
   const brandMap = new Map<string, number>();
 
   for (const order of orders) {
-    if (order.orderStatus === 'CANCELLED') continue;
+    // Skip returned orders from chart / category / brand data
+    if (order.orderStatus === OrderStatus.RETURNED) continue;
 
     const d = order.createdAt;
     let label = '';
     if (isDaily) {
       label = `${d.getDate()} ${d.toLocaleString('default', { month: 'short' })}`;
     } else {
-       label = d.toLocaleString('default', { month: 'short', year: durationDays > 365 ? '2-digit' : undefined });
+      label = d.toLocaleString('default', {
+        month: 'short',
+        year: durationDays > 365 ? '2-digit' : undefined,
+      });
     }
-    
+
     if (areaChartMap.has(label)) {
       const current = areaChartMap.get(label)!;
       current.revenue += order.finalAmount;
@@ -129,22 +147,23 @@ export const getDashboardAnalyticsService = async (query: { month?: string; year
   const areaChartData = Array.from(areaChartMap.entries()).map(([name, data]) => ({
     name,
     revenue: parseFloat(data.revenue.toFixed(2)),
-    orders: data.orders
+    orders: data.orders,
   }));
 
-  const colors = ["#3b82f6", "#8b5cf6", "#ec4899", "#f43f5e", "#f59e0b", "#10b981", "#0ea5e9", "#6366f1", "#d946ef", "#f97316"];
-  
-  const formattedCategoryData = Array.from(categoryMap.entries()).sort((a,b)=>b[1]-a[1]).map(([name, value], i) => ({
-    name,
-    value,
-    fill: colors[i % colors.length]
-  })).slice(0, 10);
+  const colors = [
+    '#3b82f6', '#8b5cf6', '#ec4899', '#f43f5e', '#f59e0b',
+    '#10b981', '#0ea5e9', '#6366f1', '#d946ef', '#f97316',
+  ];
 
-  const formattedBrandData = Array.from(brandMap.entries()).sort((a,b)=>b[1]-a[1]).map(([name, value], i) => ({
-    name,
-    value,
-    fill: colors[(i + 5) % colors.length]
-  })).slice(0, 10);
+  const formattedCategoryData = Array.from(categoryMap.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, value], i) => ({ name, value, fill: colors[i % colors.length] }))
+    .slice(0, 10);
+
+  const formattedBrandData = Array.from(brandMap.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([name, value], i) => ({ name, value, fill: colors[(i + 5) % colors.length] }))
+    .slice(0, 10);
 
   return {
     cards: {
@@ -152,13 +171,13 @@ export const getDashboardAnalyticsService = async (query: { month?: string; year
       totalOrders,
       pendingOrdersCount,
       pendingOrdersRevenue,
-      confirmedOrdersCount,
-      confirmedOrdersRevenue,
-      deliveredOrdersCount,
-      deliveredOrdersRevenue,
+      saleOrdersCount,
+      saleOrdersRevenue,
+      returnedOrdersCount,
+      returnedOrdersRevenue,
     },
     areaChartData,
     categoryData: formattedCategoryData,
-    brandData: formattedBrandData
+    brandData: formattedBrandData,
   };
 };

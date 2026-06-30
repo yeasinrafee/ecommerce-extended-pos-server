@@ -92,7 +92,7 @@ const createProductBodySchema = z.object({
 		return String(value).trim();
 	}, z.string().min(1).optional()),
 	status: z.enum(['ACTIVE', 'INACTIVE']),
-	stockStatus: z.enum(['IN_STOCK', 'LOW_STOCK', 'OUT_OF_STOCK']),
+	// stockStatus is computed automatically — not accepted from client on create
 	categories: z.array(z.string().trim().min(1)).min(1, 'At least one category is required'),
 	tags: z.array(z.string().trim().min(1)).optional(),
 	galleryImagesMeta: z.array(z.object({ id: z.string().trim().min(1), name: z.string().trim().min(1) })),
@@ -215,7 +215,6 @@ const createProduct = async (req: Request, res: Response) => {
 		barcodeId: req.body.barcodeId,
 		brandId: req.body.brandId,
 		status: req.body.status,
-		stockStatus: req.body.stockStatus,
 		categories: parseJsonField(req.body.categories, [] as string[]),
 		tags: parseJsonField(req.body.tags, [] as string[]),
 		galleryImagesMeta: parseJsonField(req.body.galleryImagesMeta, [] as { id: string; name: string }[]),
@@ -297,7 +296,6 @@ const createProduct = async (req: Request, res: Response) => {
 			image: mainImageUpload.secureUrl,
 			galleryImages: galleryUploads.map((uploaded) => uploaded.secureUrl),
 			status: parsed.status,
-			stockStatus: parsed.stockStatus,
 			categoryIds: parsed.categories,
 			tagIds: parsed.tags,
 			attributes: parsed.attributes.map((attribute) => ({
@@ -471,7 +469,7 @@ const updateProductBodySchema = z.object({
 		return String(value).trim();
 	}, z.string().min(1).optional()),
 	status: z.enum(['ACTIVE', 'INACTIVE']),
-	stockStatus: z.enum(['IN_STOCK', 'LOW_STOCK', 'OUT_OF_STOCK']),
+	// stockStatus is computed automatically — not accepted from client on update
 	categories: z.array(z.string().trim().min(1)).min(1, 'At least one category is required'),
 	tags: z.array(z.string().trim().min(1)).optional(),
 	/** "true" = keep existing main image; "false" = a new file is being uploaded */
@@ -561,7 +559,6 @@ const updateProduct = async (req: Request, res: Response) => {
 		height: req.body.height,
 		brandId: req.body.brandId,
 		status: req.body.status,
-		stockStatus: req.body.stockStatus,
 		keepMainImage: req.body.keepMainImage,
 		categories: parseJsonField(req.body.categories, [] as string[]),
 		tags: parseJsonField(req.body.tags, [] as string[]),
@@ -683,7 +680,6 @@ const updateProduct = async (req: Request, res: Response) => {
 			image: finalMainImageUrl,
 			galleryImages: finalGalleryUrls,
 			status: parsed.status,
-			stockStatus: parsed.stockStatus,
 			categoryIds: parsed.categories,
 			tagIds: parsed.tags,
 			attributes: resolvedAttributes,
@@ -724,11 +720,11 @@ const updateProduct = async (req: Request, res: Response) => {
 
 const bulkPatchProductsBodySchema = z.object({
 	ids: z.array(z.string().trim().min(1)).min(1, 'At least one product id is required'),
-	status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
-	stockStatus: z.enum(['IN_STOCK', 'LOW_STOCK', 'OUT_OF_STOCK']).optional()
+	status: z.enum(['ACTIVE', 'INACTIVE']).optional()
+	// stockStatus is intentionally excluded — it is computed automatically from stock
 }).refine(
-	(data) => data.status !== undefined || data.stockStatus !== undefined,
-	{ message: 'At least one field (status or stockStatus) must be provided' }
+	(data) => data.status !== undefined,
+	{ message: 'status must be provided' }
 );
 
 const bulkPatchProducts = async (req: Request, res: Response) => {
@@ -740,11 +736,11 @@ const bulkPatchProducts = async (req: Request, res: Response) => {
 // ─── Patch (partial quick-update) ────────────────────────────────────────────
 
 const patchProductBodySchema = z.object({
-	status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
-	stockStatus: z.enum(['IN_STOCK', 'LOW_STOCK', 'OUT_OF_STOCK']).optional()
+	status: z.enum(['ACTIVE', 'INACTIVE']).optional()
+	// stockStatus is intentionally excluded — it is computed automatically from stock
 }).refine(
-	(data) => data.status !== undefined || data.stockStatus !== undefined,
-	{ message: 'At least one field (status or stockStatus) must be provided' }
+	(data) => data.status !== undefined,
+	{ message: 'status must be provided' }
 );
 
 const patchProduct = async (req: Request, res: Response) => {

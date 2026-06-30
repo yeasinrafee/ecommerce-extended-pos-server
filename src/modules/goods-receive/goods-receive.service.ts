@@ -2,7 +2,7 @@ import { prisma } from '../../config/prisma.js';
 import { AppError } from '../../common/errors/app-error.js';
 import { GoodsReceiveStatus, StockMovementType, Prisma } from '@prisma/client';
 import { goodsReceiveRepository } from './goods-receive.repository.js';
-import { stockLedgerService } from '../stock-ledger/stock-ledger.service.js';
+import { stockLedgerService, resolveStockStatus } from '../stock-ledger/stock-ledger.service.js';
 
 export class GoodsReceiveService {
   private async generateGRNNumber() {
@@ -164,6 +164,24 @@ export class GoodsReceiveService {
           referenceId: grn.id,
           performedBy: userId,
           notes: `Received from supplier invoice/challan ${grn.billNumber ?? 'N/A'}`
+        });
+
+        // Increment global Product.stock, clear defaultQuantity (marks as "stocked at least once"),
+        // then auto-resolve stockStatus
+        const updatedGrnProduct = await tx.product.update({
+          where: { id: item.productId },
+          data: {
+            stock: { increment: item.quantityAccepted },
+            // Setting defaultQuantity to 0 signals that this product has gone through GRN
+            // so the dashboard will never show "Pending" again — only IN_STOCK / LOW_STOCK / OUT_OF_STOCK
+            defaultQuantity: 0
+          },
+          select: { stock: true }
+        });
+        const resolvedStatus = await resolveStockStatus(tx, item.productId, updatedGrnProduct.stock);
+        await tx.product.update({
+          where: { id: item.productId },
+          data: { stockStatus: resolvedStatus }
         });
 
         // 3. Update PO received quantity if linked

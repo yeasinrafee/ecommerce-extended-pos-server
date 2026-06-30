@@ -37,10 +37,8 @@ enum Status {
 
 enum OrderStatus {
   PENDING
-  CONFIRMED
-  SHIPPED
-  DELIVERED
-  CANCELLED
+  SALE
+  RETURNED
 }
 
 enum LocationType {

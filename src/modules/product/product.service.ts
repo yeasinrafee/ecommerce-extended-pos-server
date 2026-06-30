@@ -261,7 +261,9 @@ const createProduct = async (payload: CreateProductDto) => {
 				finalPrice,
 				discountType: payload.discountType,
 				discountValue: payload.discountType === 'NONE' ? null : payload.discountValue ?? null,
-				stock: payload.stock,
+				// stock starts at 0 — actual stock is only set through GRN/inventory flow
+				stock: 0,
+				defaultQuantity: payload.stock,
 				weight: payload.weight ?? null,
 				length: payload.length ?? null,
 				width: payload.width ?? null,
@@ -274,7 +276,8 @@ const createProduct = async (payload: CreateProductDto) => {
 				image: payload.image,
 				galleryImages: payload.galleryImages,
 				status: payload.status,
-				stockStatus: payload.stockStatus
+				// stockStatus is always OUT_OF_STOCK on creation — only GRN sets it to IN_STOCK
+				stockStatus: 'OUT_OF_STOCK'
 			}
 		});
 
@@ -875,7 +878,9 @@ const updateProduct = async (id: string, payload: UpdateProductDto) => {
 				finalPrice,
 				discountType: payload.discountType,
 				discountValue: payload.discountType === 'NONE' ? null : payload.discountValue ?? null,
-				stock: payload.stock,
+				// Do NOT overwrite stock — actual stock is managed by GRN/inventory flow only.
+				// Update defaultQuantity (target) from the form value.
+				defaultQuantity: payload.stock,
 				weight: payload.weight ?? null,
 				length: payload.length ?? null,
 				width: payload.width ?? null,
@@ -887,8 +892,8 @@ const updateProduct = async (id: string, payload: UpdateProductDto) => {
 				...(payload.brandId !== undefined && { brandId: payload.brandId }),
 				image: payload.image,
 				galleryImages: payload.galleryImages,
-				status: payload.status,
-				stockStatus: payload.stockStatus
+				status: payload.status
+				// stockStatus is intentionally omitted — it is managed by GRN/inventory
 			}
 		});
 
@@ -1031,11 +1036,11 @@ const patchProduct = async (id: string, payload: PatchProductDto) => {
 		]);
 	}
 
+	// stockStatus is NOT patchable — it is derived automatically from product.stock
 	return prisma.product.update({
 		where: { id },
 		data: {
-			...(payload.status !== undefined && { status: payload.status }),
-			...(payload.stockStatus !== undefined && { stockStatus: payload.stockStatus })
+			...(payload.status !== undefined && { status: payload.status })
 		},
 		include: {
 			brand: true,
@@ -1049,11 +1054,11 @@ const patchProduct = async (id: string, payload: PatchProductDto) => {
 };
 
 const bulkPatchProducts = async (payload: BulkPatchProductDto) => {
+	// stockStatus is NOT bulk-patchable — it is derived automatically from product.stock
 	const result = await prisma.product.updateMany({
 		where: { id: { in: payload.ids } },
 		data: {
-			...(payload.status !== undefined && { status: payload.status }),
-			...(payload.stockStatus !== undefined && { stockStatus: payload.stockStatus })
+			...(payload.status !== undefined && { status: payload.status })
 		}
 	});
 	return result;

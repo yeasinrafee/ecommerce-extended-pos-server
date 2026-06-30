@@ -64,11 +64,33 @@ const getCustomerReturn = async (req: Request, res: Response) => {
   sendResponse({ res, statusCode: 200, success: true, message: 'Customer Return fetched', data });
 };
 
+const handleOrderReturn = async (req: Request, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) throw new AppError(401, 'Unauthorized');
+
+  const { orderId, productId, quantity } = req.body;
+
+  if (!orderId || !productId || !quantity || quantity <= 0) {
+    throw new AppError(400, 'orderId, productId, and a positive quantity are required');
+  }
+
+  const data = await customerReturnService.handleCustomerReturn(orderId, productId, Number(quantity));
+
+  sendResponse({
+    res,
+    statusCode: 200,
+    success: true,
+    message: 'Customer return processed. Stock incremented and profit adjusted.',
+    data
+  });
+};
+
 export const customerReturnController = {
   createCustomerReturn,
   updateCustomerReturn,
   refundCustomerReturn,
   cancelCustomerReturn,
   getCustomerReturns,
-  getCustomerReturn
+  getCustomerReturn,
+  handleOrderReturn
 };

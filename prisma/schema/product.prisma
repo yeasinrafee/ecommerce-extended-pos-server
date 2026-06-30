@@ -11,6 +11,7 @@ model Product {
   discountType      DiscountType?
   discountValue     Float?
   stock             Int
+  defaultQuantity   Int           @default(1)
   avgRating         Float         @default(0)
   totalRatings      Int           @default(0)
   totalReviews      Int           @default(0)

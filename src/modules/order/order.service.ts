@@ -1,6 +1,6 @@
 import { prisma } from '../../config/prisma.js';
 import { AppError } from '../../common/errors/app-error.js';
-import { DiscountType } from '@prisma/client';
+import { DiscountType, OrderStatus } from '@prisma/client';
 import type { CreateOrderDto } from './order.types.js';
 import type { PrismaClient } from '@prisma/client';
 import { emailQueue } from '../../common/services/email.service.js';
@@ -257,6 +257,26 @@ export const createOrderService = async (
       if (updateResult.count === 0) {
         throw new AppError(400, `Concurrency Error: Product ${product.name} does not have enough stock.`);
       }
+
+      // Reservation: subtract available qty and increment reservedQuantity in Stock table
+      const stockRecord = await tx.stock.findFirst({
+        where: { productId: product.id },
+        orderBy: { quantity: 'desc' },
+      });
+
+      if (stockRecord) {
+        const available = stockRecord.quantity - stockRecord.reservedQuantity;
+        if (available < item.quantity) {
+          throw new AppError(400, `Insufficient available stock for product ${product.name} (available: ${available}).`);
+        }
+        await tx.stock.update({
+          where: { id: stockRecord.id },
+          data: {
+            quantity: { decrement: item.quantity },
+            reservedQuantity: { increment: item.quantity },
+          },
+        });
+      }
     }
 
     let orderDiscountValue = 0;
@@ -412,11 +432,16 @@ export const createOrderService = async (
 export const getAllOrdersService = async (
   page: number,
   limit: number,
-  searchTerm?: string
+  searchTerm?: string,
+  status?: OrderStatus
 ) => {
   const skip = (page - 1) * limit;
 
   const where: any = {};
+
+  if (status) {
+    where.orderStatus = status;
+  }
 
   if (searchTerm) {
     where.OR = [
@@ -627,18 +652,17 @@ export const cancelOrderService = async (orderId: string, userId: string) => {
     throw new AppError(403, 'You are not authorized to cancel this order');
   }
 
-  if (order.orderStatus === 'CANCELLED') {
-    throw new AppError(400, 'Order is already cancelled');
+  if (order.orderStatus === OrderStatus.RETURNED) {
+    throw new AppError(400, 'Order has already been returned');
   }
 
-  // Optional: Check if order is already shipped/delivered and prevent cancellation
-  if (['SHIPPED', 'DELIVERED'].includes(order.orderStatus)) {
-    throw new AppError(400, `Cannot cancel an order that is already ${order.orderStatus.toLowerCase()}`);
+  if (order.orderStatus === OrderStatus.SALE) {
+    throw new AppError(400, `Cannot cancel an order that has already been completed (SALE).`);
   }
 
   const updatedOrder = await prisma.order.update({
     where: { id: orderId },
-    data: { orderStatus: 'CANCELLED' },
+    data: { orderStatus: OrderStatus.RETURNED },
   });
 
   // Background email for cancellation
@@ -654,4 +678,57 @@ export const cancelOrderService = async (orderId: string, userId: string) => {
   );
 
   return updatedOrder;
+};
+
+export const completeOrderService = async (orderId: string) => {
+  const order = await prisma.order.findUnique({
+    where: { id: orderId },
+    include: { orderItems: true },
+  });
+
+  if (!order) {
+    throw new AppError(404, 'Order not found');
+  }
+
+  if (order.orderStatus !== OrderStatus.PENDING) {
+    throw new AppError(
+      400,
+      `Cannot complete order in ${order.orderStatus} status. Only PENDING orders can be completed.`
+    );
+  }
+
+  return prisma.$transaction(async (tx) => {
+    // Clear reservedQuantity for all items in this order
+    for (const item of order.orderItems) {
+      const stockRecord = await tx.stock.findFirst({
+        where: { productId: item.productId },
+        orderBy: { reservedQuantity: 'desc' },
+      });
+
+      if (stockRecord && stockRecord.reservedQuantity >= item.quantity) {
+        await tx.stock.update({
+          where: { id: stockRecord.id },
+          data: {
+            reservedQuantity: { decrement: item.quantity },
+          },
+        });
+      }
+    }
+
+    // Calculate cost and profit
+    const totalCost = order.orderItems.reduce(
+      (sum, item) => sum + item.Baseprice * item.quantity,
+      0
+    );
+    const totalProfit = order.finalAmount - totalCost;
+
+    return tx.order.update({
+      where: { id: orderId },
+      data: {
+        orderStatus: OrderStatus.SALE,
+        totalCost,
+        totalProfit,
+      },
+    });
+  });
 };

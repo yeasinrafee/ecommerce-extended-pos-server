@@ -486,6 +486,177 @@ export class StockService {
     };
   }
 
+  /**
+   * Detailed Activity Report — every stock movement event, richly labelled.
+   * Groups results chronologically. Used for the "Activity Log" report tab.
+   */
+  async getActivityReport(params: {
+    startDate?: string;
+    endDate?: string;
+    locationId?: string;
+    productId?: string;
+    movementType?: string;
+    searchTerm?: string;
+    page?: number;
+    limit?: number;
+  }) {
+    const page = params.page ?? 1;
+    const limit = params.limit ?? 50;
+    const skip = (page - 1) * limit;
+
+    const where: Prisma.StockMovementWhereInput = {};
+
+    if (params.locationId) where.locationId = params.locationId;
+    if (params.productId) where.productId = params.productId;
+    if (params.movementType) where.movementType = params.movementType as any;
+    if (params.startDate || params.endDate) {
+      where.createdAt = {};
+      if (params.startDate) {
+        where.createdAt.gte = new Date(params.startDate + 'T00:00:00.000Z');
+      }
+      if (params.endDate) {
+        where.createdAt.lte = new Date(params.endDate + 'T23:59:59.999Z');
+      }
+    }
+    if (params.searchTerm) {
+      where.OR = [
+        { product: { name: { contains: params.searchTerm, mode: 'insensitive' } } },
+        { product: { sku: { contains: params.searchTerm, mode: 'insensitive' } } },
+        { notes: { contains: params.searchTerm, mode: 'insensitive' } },
+      ];
+    }
+
+    const [movements, total] = await Promise.all([
+      prisma.stockMovement.findMany({
+        where,
+        skip,
+        take: limit,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          product: {
+            select: {
+              id: true,
+              name: true,
+              sku: true,
+              barcodeId: true,
+              Baseprice: true,
+              finalPrice: true,
+            },
+          },
+          location: { select: { id: true, name: true, code: true } },
+          performer: {
+            select: {
+              id: true,
+              email: true,
+              admins: { select: { name: true }, take: 1 },
+            },
+          },
+        },
+      }),
+      prisma.stockMovement.count({ where }),
+    ]);
+
+    // Human-readable label map
+    const movementLabel: Record<string, string> = {
+      PURCHASE:         'Stock Received (GRN)',
+      SALE:             'Stock Sold (POS)',
+      CUSTOMER_RETURN:  'Customer Return',
+      SUPPLIER_RETURN:  'Supplier Return',
+      TRANSFER_IN:      'Stock Transfer In',
+      TRANSFER_OUT:     'Stock Transfer Out',
+      ADJUSTMENT_IN:    'Stock Adjustment (+)',
+      ADJUSTMENT_OUT:   'Stock Adjustment (-)',
+      DAMAGE:           'Damage / Waste',
+      EXPIRED:          'Expired Stock Written Off',
+    };
+
+    // Direction map: IN = stock increased, OUT = stock decreased
+    const movementDirection: Record<string, 'IN' | 'OUT'> = {
+      PURCHASE:        'IN',
+      CUSTOMER_RETURN: 'IN',
+      SUPPLIER_RETURN: 'OUT',
+      TRANSFER_IN:     'IN',
+      TRANSFER_OUT:    'OUT',
+      ADJUSTMENT_IN:   'IN',
+      ADJUSTMENT_OUT:  'OUT',
+      SALE:            'OUT',
+      DAMAGE:          'OUT',
+      EXPIRED:         'OUT',
+    };
+
+    const rows = movements.map((m) => {
+      const performerName =
+        m.performer?.admins?.[0]?.name ?? m.performer?.email ?? '—';
+      const direction = movementDirection[m.movementType] ?? 'IN';
+      const unitCost = Number(m.product.Baseprice);
+      const absQty = Math.abs(m.quantityChanged);
+      const totalCostImpact = +(unitCost * absQty).toFixed(2);
+
+      return {
+        id: m.id,
+        date: m.createdAt.toISOString(),
+        dateFormatted: m.createdAt.toISOString().slice(0, 10),
+        timeFormatted: m.createdAt.toTimeString().slice(0, 8),
+        movementType: m.movementType,
+        movementLabel: movementLabel[m.movementType] ?? m.movementType,
+        direction,
+        product: {
+          id: m.product.id,
+          name: m.product.name,
+          sku: m.product.sku ?? '—',
+          barcodeId: m.product.barcodeId ?? '—',
+        },
+        location: {
+          id: m.location.id,
+          name: m.location.name,
+          code: m.location.code,
+        },
+        previousQty: m.previousQuantity,
+        quantityChanged: m.quantityChanged,
+        currentQty: m.currentQuantity,
+        unitCost,
+        totalCostImpact,
+        referenceType: m.referenceType,
+        referenceId: m.referenceId,
+        performedBy: performerName,
+        notes: m.notes ?? '—',
+      };
+    });
+
+    // Summary counters for the current page / full filtered set (use totals from DB)
+    const [summaryAgg] = await prisma.$queryRaw<
+      { totalIn: bigint; totalOut: bigint; totalRows: bigint }[]
+    >`
+      SELECT
+        COALESCE(SUM(CASE WHEN "quantityChanged" > 0 THEN "quantityChanged" ELSE 0 END), 0)::bigint AS "totalIn",
+        COALESCE(SUM(CASE WHEN "quantityChanged" < 0 THEN ABS("quantityChanged") ELSE 0 END), 0)::bigint AS "totalOut",
+        COUNT(*)::bigint AS "totalRows"
+      FROM stock_movements
+      WHERE 1=1
+        ${params.locationId ? Prisma.sql`AND "locationId" = ${params.locationId}` : Prisma.empty}
+        ${params.productId ? Prisma.sql`AND "productId" = ${params.productId}` : Prisma.empty}
+        ${params.movementType ? Prisma.sql`AND "movementType" = ${params.movementType}::"StockMovementType"` : Prisma.empty}
+        ${params.startDate ? Prisma.sql`AND "createdAt" >= ${new Date(params.startDate + 'T00:00:00.000Z')}` : Prisma.empty}
+        ${params.endDate ? Prisma.sql`AND "createdAt" <= ${new Date(params.endDate + 'T23:59:59.999Z')}` : Prisma.empty}
+    `;
+
+    return {
+      data: rows,
+      summary: {
+        totalIn: Number(summaryAgg?.totalIn ?? 0),
+        totalOut: Number(summaryAgg?.totalOut ?? 0),
+        netChange: Number(summaryAgg?.totalIn ?? 0) - Number(summaryAgg?.totalOut ?? 0),
+        totalTransactions: total,
+      },
+      meta: {
+        page,
+        limit,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / limit)),
+      },
+    };
+  }
+
   async getMovementReport(params: {
     startDate?: string;
     endDate?: string;

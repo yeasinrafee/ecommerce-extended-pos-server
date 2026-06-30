@@ -10,6 +10,7 @@ export type PosBillsListQuery = {
 	page?: number;
 	limit?: number;
 	paymentStatus?: PaymentStatus;
+	searchTerm?: string;
 };
 
 export type PosVariationLineInput = {

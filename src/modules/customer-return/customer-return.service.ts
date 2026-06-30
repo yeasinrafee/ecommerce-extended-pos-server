@@ -214,6 +214,147 @@ export class CustomerReturnService {
       updater: userId ? { connect: { id: userId } } : undefined
     });
   }
+
+  async handleCustomerReturn(orderId: string, productId: string, quantity: number) {
+    return prisma.$transaction(async (tx) => {
+      let order = await tx.order.findUnique({
+        where: { id: orderId },
+        include: { orderItems: true }
+      });
+
+      if (order) {
+        const orderItem = order.orderItems.find((item) => item.productId === productId);
+        if (!orderItem) {
+          throw new AppError(404, 'Product not found in this order');
+        }
+
+        if (quantity > orderItem.quantity) {
+          throw new AppError(400, 'Return quantity cannot exceed order item quantity');
+        }
+
+        const location = await tx.location.findFirst({ where: { deletedAt: null } });
+        if (!location) {
+          throw new AppError(404, 'No location found in the system');
+        }
+        const locationId = location.id;
+
+        const stock = await tx.stock.findUnique({
+          where: {
+            productId_locationId: { productId, locationId }
+          }
+        });
+
+        if (stock) {
+          await tx.stock.update({
+            where: { id: stock.id },
+            data: {
+              quantity: {
+                increment: quantity
+              }
+            }
+          });
+        } else {
+          await tx.stock.create({
+            data: {
+              productId,
+              locationId,
+              quantity,
+              reservedQuantity: 0
+            }
+          });
+        }
+
+        // Increment global Product.stock
+        await tx.product.update({
+          where: { id: productId },
+          data: {
+            stock: {
+              increment: quantity
+            }
+          }
+        });
+
+        const totalCost = orderItem.Baseprice * quantity;
+
+        await tx.order.update({
+          where: { id: orderId },
+          data: {
+            totalProfit: {
+              decrement: totalCost
+            },
+            orderStatus: 'RETURNED'
+          }
+        });
+
+        return { success: true };
+      } else {
+        // If not found in Order, check PosOrder!
+        const posOrder = await tx.posOrder.findUnique({
+          where: { id: orderId },
+          include: { posOrderItems: true }
+        });
+
+        if (!posOrder) {
+          throw new AppError(404, 'Order or POS Order not found');
+        }
+
+        const posItem = posOrder.posOrderItems.find((item) => item.productId === productId);
+        if (!posItem) {
+          throw new AppError(404, 'Product not found in this POS Order');
+        }
+
+        if (quantity > posItem.quantity) {
+          throw new AppError(400, 'Return quantity cannot exceed item quantity');
+        }
+
+        // Find store location
+        const store = posOrder.storeId ? await tx.store.findUnique({ where: { id: posOrder.storeId } }) : null;
+        const locationId = store?.locationId ?? (await tx.location.findFirst({ where: { deletedAt: null } }))?.id;
+
+        if (!locationId) {
+          throw new AppError(404, 'No location associated with this order/store');
+        }
+
+        const stock = await tx.stock.findUnique({
+          where: {
+            productId_locationId: { productId, locationId }
+          }
+        });
+
+        if (stock) {
+          await tx.stock.update({
+            where: { id: stock.id },
+            data: {
+              quantity: {
+                increment: quantity
+              }
+            }
+          });
+        } else {
+          await tx.stock.create({
+            data: {
+              productId,
+              locationId,
+              quantity,
+              reservedQuantity: 0
+            }
+          });
+        }
+
+        // Increment global Product.stock
+        await tx.product.update({
+          where: { id: productId },
+          data: {
+            stock: {
+              increment: quantity
+            }
+          }
+        });
+
+        return { success: true };
+      }
+    });
+  }
 }
 
 export const customerReturnService = new CustomerReturnService();

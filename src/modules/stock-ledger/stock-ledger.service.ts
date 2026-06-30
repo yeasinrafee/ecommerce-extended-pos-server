@@ -3,6 +3,33 @@ import { AppError } from '../../common/errors/app-error.js';
 import { prisma } from '../../config/prisma.js';
 import { stockLedgerRepository } from './stock-ledger.repository.js';
 
+/**
+ * Derives the correct stockStatus from the current stock quantity.
+ * LOW_STOCK threshold defaults to 10 unless a lowStockConfig exists for the product.
+ *
+ * Rules:
+ *   stock <= 0              → OUT_OF_STOCK
+ *   0 < stock <= threshold  → LOW_STOCK
+ *   stock > threshold       → IN_STOCK
+ */
+export const resolveStockStatus = async (
+  tx: Prisma.TransactionClient,
+  productId: string,
+  currentStock: number
+): Promise<'IN_STOCK' | 'LOW_STOCK' | 'OUT_OF_STOCK'> => {
+  if (currentStock <= 0) return 'OUT_OF_STOCK';
+
+  // Look up a global (locationId = null) low stock config for this product
+  const config = await tx.lowStockConfig.findFirst({
+    where: { productId, locationId: null, deletedAt: null },
+    select: { minimumQuantity: true }
+  });
+
+  const threshold = config?.minimumQuantity ?? 10;
+  if (currentStock <= threshold) return 'LOW_STOCK';
+  return 'IN_STOCK';
+};
+
 export class StockLedgerService {
   /**
    * Atomic stock adjustment that locks the record for update, validates that quantity won't go negative,

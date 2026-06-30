@@ -12,8 +12,9 @@ const getBills = async (req: Request, res: Response) => {
 	const paymentStatus = Object.values(PaymentStatus).includes(paymentStatusValue as PaymentStatus)
 		? (paymentStatusValue as PaymentStatus)
 		: undefined;
+	const searchTerm = typeof req.query.searchTerm === 'string' ? req.query.searchTerm.trim() || undefined : undefined;
 
-	const result = await posService.getBills({ page, limit, paymentStatus });
+	const result = await posService.getBills({ page, limit, paymentStatus, searchTerm });
 
 	sendResponse({
 		res,
