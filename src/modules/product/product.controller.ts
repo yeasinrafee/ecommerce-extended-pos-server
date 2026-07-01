@@ -61,7 +61,6 @@ const createProductBodySchema = z.object({
 	discountValue: nullableNumberSchema,
 	discountStartDate: nullableDateSchema,
 	discountEndDate: nullableDateSchema,
-	stock: z.coerce.number().int().nonnegative(),
 	sku: z.preprocess((value) => {
 		if (value === '' || value === null || value === undefined) {
 			return null;
@@ -130,17 +129,6 @@ const createProductBodySchema = z.object({
 		seoKeywords: z.array(z.string().trim().min(1))
 	}).nullable()
 }).superRefine((data, ctx) => {
-	const hasWeight = data.weight != null;
-	const hasDimensions = data.length != null && data.width != null && data.height != null;
-
-	if (!hasWeight && !hasDimensions) {
-		ctx.addIssue({
-			code: z.ZodIssueCode.custom,
-			path: ['weight'],
-			message: 'Provide weight or all three dimensions'
-		});
-	}
-
 	if (data.discountType !== 'NONE' && data.discountValue == null) {
 		ctx.addIssue({
 			code: z.ZodIssueCode.custom,
@@ -190,12 +178,6 @@ const createProduct = async (req: Request, res: Response) => {
 	const mainImageFile = files?.mainImage?.[0] ?? null;
 	const galleryFiles = files?.galleryImages ?? [];
 
-	if (!mainImageFile) {
-		throw new AppError(400, 'Main image is required', [
-			{ message: 'Please upload a product image', code: 'MAIN_IMAGE_REQUIRED' }
-		]);
-	}
-
 	const parsed = createProductBodySchema.parse({
 		name: req.body.name,
 		shortDescription: req.body.shortDescription,
@@ -206,7 +188,6 @@ const createProduct = async (req: Request, res: Response) => {
 		discountValue: req.body.discountValue,
 		discountStartDate: req.body.discountStartDate,
 		discountEndDate: req.body.discountEndDate,
-		stock: req.body.stock,
 		sku: req.body.sku,
 		weight: req.body.weight,
 		length: req.body.length,
@@ -247,14 +228,18 @@ const createProduct = async (req: Request, res: Response) => {
 	const uploadedPublicIds: string[] = [];
 
 	try {
-		const [mainImageUpload] = await uploadMultipleFilesToCloudinary([mainImageFile], {
-			projectFolder: 'products',
-			entityId: uploadEntityId,
-			subFolder: 'main',
-			fileNamePrefix: 'product'
-		});
+		const mainImageUpload = mainImageFile
+			? (await uploadMultipleFilesToCloudinary([mainImageFile], {
+					projectFolder: 'products',
+					entityId: uploadEntityId,
+					subFolder: 'main',
+					fileNamePrefix: 'product'
+				}))[0]
+			: null;
 
-		uploadedPublicIds.push(mainImageUpload.publicId);
+		if (mainImageUpload) {
+			uploadedPublicIds.push(mainImageUpload.publicId);
+		}
 
 		const galleryUploads = galleryFiles.length > 0
 			? await uploadMultipleFilesToCloudinary(galleryFiles, {
@@ -286,14 +271,13 @@ const createProduct = async (req: Request, res: Response) => {
 			discountValue: parsed.discountValue,
 			discountStartDate: parsed.discountStartDate,
 			discountEndDate: parsed.discountEndDate,
-			stock: parsed.stock,
 			sku: parsed.sku,
 			weight: parsed.weight,
 			length: parsed.length,
 			width: parsed.width,
 			height: parsed.height,
 			brandId: parsed.brandId,
-			image: mainImageUpload.secureUrl,
+			image: mainImageUpload?.secureUrl ?? null,
 			galleryImages: galleryUploads.map((uploaded) => uploaded.secureUrl),
 			status: parsed.status,
 			categoryIds: parsed.categories,
@@ -453,7 +437,6 @@ const updateProductBodySchema = z.object({
 	discountValue: nullableNumberSchema,
 	discountStartDate: nullableDateSchema,
 	discountEndDate: nullableDateSchema,
-	stock: z.coerce.number().int().nonnegative(),
 	sku: z.preprocess((value) => {
 		if (value === '' || value === null || value === undefined) return null;
 		return String(value).trim();
@@ -505,13 +488,6 @@ const updateProductBodySchema = z.object({
 		seoKeywords: z.array(z.string().trim().min(1))
 	}).nullable()
 }).superRefine((data, ctx) => {
-	const hasWeight = data.weight != null;
-	const hasDimensions = data.length != null && data.width != null && data.height != null;
-
-	if (!hasWeight && !hasDimensions) {
-		ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['weight'], message: 'Provide weight or all three dimensions' });
-	}
-
 	if (data.discountType !== 'NONE' && data.discountValue == null) {
 		ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['discountValue'], message: 'Discount value is required when a discount type is selected' });
 	}
@@ -551,7 +527,6 @@ const updateProduct = async (req: Request, res: Response) => {
 		discountValue: req.body.discountValue,
 		discountStartDate: req.body.discountStartDate,
 		discountEndDate: req.body.discountEndDate,
-		stock: req.body.stock,
 		sku: req.body.sku,
 		weight: req.body.weight,
 		length: req.body.length,
@@ -569,12 +544,8 @@ const updateProduct = async (req: Request, res: Response) => {
 		seo: parseJsonField(req.body.seo, null as { metaTitle: string; metaDescription: string; seoKeywords: string[] } | null)
 	});
 
-	// Validate keepMainImage vs file presence
-	if (parsed.keepMainImage === 'false' && !mainImageFile) {
-		throw new AppError(400, 'Main image is required', [
-			{ message: 'A new main image file must be uploaded when replacing the current image', code: 'MAIN_IMAGE_REQUIRED' }
-		]);
-	}
+	// Validate keepMainImage vs file presence — if false and no file, image will be cleared (set to null)
+	// No error thrown — image is optional
 
 	// Validate new gallery files match metadata
 	if (galleryFiles.length !== parsed.galleryImagesMeta.length) {
@@ -607,12 +578,12 @@ const updateProduct = async (req: Request, res: Response) => {
 
 	try {
 		// ── Main image ──────────────────────────────────────────────────────────
-		let finalMainImageUrl: string;
+		let finalMainImageUrl: string | null;
 
 		if (parsed.keepMainImage === 'true') {
-			finalMainImageUrl = existingProduct.image as string;
-		} else {
-			const [mainUpload] = await uploadMultipleFilesToCloudinary([mainImageFile!], {
+			finalMainImageUrl = existingProduct.image as string | null;
+		} else if (mainImageFile) {
+			const [mainUpload] = await uploadMultipleFilesToCloudinary([mainImageFile], {
 				projectFolder: 'products',
 				entityId: id,
 				subFolder: 'main',
@@ -620,6 +591,9 @@ const updateProduct = async (req: Request, res: Response) => {
 			});
 			uploadedPublicIds.push(mainUpload.publicId);
 			finalMainImageUrl = mainUpload.secureUrl;
+		} else {
+			// keepMainImage === 'false' and no new file → clear the image
+			finalMainImageUrl = null;
 		}
 
 		// ── New gallery images ──────────────────────────────────────────────────
@@ -670,7 +644,6 @@ const updateProduct = async (req: Request, res: Response) => {
 			discountValue: parsed.discountValue,
 			discountStartDate: parsed.discountStartDate,
 			discountEndDate: parsed.discountEndDate,
-			stock: parsed.stock,
 			sku: parsed.sku,
 			weight: parsed.weight,
 			length: parsed.length,

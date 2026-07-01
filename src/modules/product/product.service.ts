@@ -263,7 +263,7 @@ const createProduct = async (payload: CreateProductDto) => {
 				discountValue: payload.discountType === 'NONE' ? null : payload.discountValue ?? null,
 				// stock starts at 0 — actual stock is only set through GRN/inventory flow
 				stock: 0,
-				defaultQuantity: payload.stock,
+				defaultQuantity: 0,
 				weight: payload.weight ?? null,
 				length: payload.length ?? null,
 				width: payload.width ?? null,
@@ -879,8 +879,6 @@ const updateProduct = async (id: string, payload: UpdateProductDto) => {
 				discountType: payload.discountType,
 				discountValue: payload.discountType === 'NONE' ? null : payload.discountValue ?? null,
 				// Do NOT overwrite stock — actual stock is managed by GRN/inventory flow only.
-				// Update defaultQuantity (target) from the form value.
-				defaultQuantity: payload.stock,
 				weight: payload.weight ?? null,
 				length: payload.length ?? null,
 				width: payload.width ?? null,

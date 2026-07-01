@@ -39,16 +39,27 @@ const getCategories = async ({ page = 1, limit = 10, searchTerm }: CategoryListQ
         ? { name: { contains: searchTerm, mode: 'insensitive' } }
         : {};
 
-    const [data, total] = await Promise.all([
+    const [categories, total] = await Promise.all([
         prisma.productCategory.findMany({
             where,
             skip,
             take: limit,
             orderBy: { createdAt: 'desc' },
-            include: { subCategories: true }
+            include: {
+                subCategories: true,
+                _count: {
+                    select: { products: { where: { product: { deletedAt: null } } } }
+                }
+            }
         }),
         prisma.productCategory.count({ where })
     ]);
+
+    const data = categories.map((c) => ({
+        ...c,
+        productCount: c._count.products,
+        _count: undefined
+    }));
 
     return {
         data,
@@ -68,16 +79,27 @@ const getParentCategories = async ({ page = 1, limit = 10, searchTerm }: Categor
         ...(searchTerm ? { name: { contains: searchTerm, mode: 'insensitive' } } : {})
     };
 
-    const [data, total] = await Promise.all([
+    const [categories, total] = await Promise.all([
         prisma.productCategory.findMany({
             where,
             skip,
             take: limit,
             orderBy: { createdAt: 'desc' },
-            include: { subCategories: true }
+            include: {
+                subCategories: true,
+                _count: {
+                    select: { products: { where: { product: { deletedAt: null } } } }
+                }
+            }
         }),
         prisma.productCategory.count({ where })
     ]);
+
+    const data = categories.map((c) => ({
+        ...c,
+        productCount: c._count.products,
+        _count: undefined
+    }));
 
     return {
         data,
@@ -234,6 +256,43 @@ const deleteCategory = async (id: string) => {
         throw new AppError(404, 'Category not found', [{ message: 'No category exists with the provided id', code: 'NOT_FOUND' }]);
     }
 
+    // Block if parent category still has subcategories
+    if (!existing.parentId) {
+        const subCategories = await prisma.productCategory.findMany({
+            where: { parentId: id },
+            select: { id: true, name: true },
+            take: 5
+        });
+
+        if (subCategories.length > 0) {
+            const names = subCategories.map((s) => `"${s.name}"`).join(', ');
+            throw new AppError(409, 'Cannot delete — category has subcategories', [
+                {
+                    message: `Delete the following subcategories first: ${names}.`,
+                    code: 'CATEGORY_HAS_SUBCATEGORIES'
+                }
+            ]);
+        }
+    }
+
+    // Block if any active products are linked to this category
+    const linkedProducts = await prisma.categoriesOnProducts.findMany({
+        where: { categoryId: id },
+        include: { product: { select: { id: true, name: true, deletedAt: true } } },
+        take: 5
+    });
+
+    const activeLinked = linkedProducts.filter((lp) => !lp.product.deletedAt);
+    if (activeLinked.length > 0) {
+        const names = activeLinked.map((lp) => `"${lp.product.name}"`).join(', ');
+        throw new AppError(409, 'Cannot delete — category is linked to products', [
+            {
+                message: `This category is used by: ${names}. Remove the category from those products first.`,
+                code: 'CATEGORY_HAS_PRODUCTS'
+            }
+        ]);
+    }
+
     const previousPublicId = getPublicIdFromUrl(existing.image) ?? null;
 
     if (previousPublicId) {
@@ -252,7 +311,21 @@ const deleteCategory = async (id: string) => {
 };
 
 const getAllCategories = async () => {
-    return prisma.productCategory.findMany({ orderBy: { createdAt: 'desc' }, include: { subCategories: true } });
+    const categories = await prisma.productCategory.findMany({
+        orderBy: { createdAt: 'desc' },
+        include: {
+            subCategories: true,
+            _count: {
+                select: { products: { where: { product: { deletedAt: null } } } }
+            }
+        }
+    });
+
+    return categories.map((c) => ({
+        ...c,
+        productCount: c._count.products,
+        _count: undefined
+    }));
 };
 
 export const productCategoryService = {

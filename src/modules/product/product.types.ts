@@ -33,14 +33,13 @@ export type CreateProductDto = {
 	discountValue?: number | null;
 	discountStartDate?: Date | null;
 	discountEndDate?: Date | null;
-	stock: number;
 	sku?: string | null;
 	weight?: number | null;
 	length?: number | null;
 	width?: number | null;
 	height?: number | null;
 	brandId?: string;
-	image: string;
+	image: string | null;
 	galleryImages: string[];
 	status: Status;
 	// stockStatus is intentionally omitted — always forced to OUT_OF_STOCK by service on create
@@ -74,14 +73,13 @@ export type UpdateProductDto = {
 	discountValue?: number | null;
 	discountStartDate?: Date | null;
 	discountEndDate?: Date | null;
-	stock: number;
 	sku?: string | null;
 	weight?: number | null;
 	length?: number | null;
 	width?: number | null;
 	height?: number | null;
 	brandId?: string;
-	image: string;
+	image: string | null;
 	galleryImages: string[];
 	status: Status;
 	// stockStatus is intentionally omitted — managed by GRN/inventory only
