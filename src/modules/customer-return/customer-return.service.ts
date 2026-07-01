@@ -2,7 +2,7 @@ import { prisma } from '../../config/prisma.js';
 import { AppError } from '../../common/errors/app-error.js';
 import { CustomerReturnStatus, StockMovementType, Prisma } from '@prisma/client';
 import { customerReturnRepository } from './customer-return.repository.js';
-import { stockLedgerService } from '../stock-ledger/stock-ledger.service.js';
+import { stockLedgerService, resolveStockStatus } from '../stock-ledger/stock-ledger.service.js';
 
 /**
  * Customer Return Status Flow:
@@ -169,6 +169,7 @@ export class CustomerReturnService {
 
     return prisma.$transaction(async (tx) => {
       for (const item of cr.items) {
+        // 1. Update location-wise stock ledger (stocks table + movement record)
         await stockLedgerService.adjustStock(tx, {
           productId: item.productId,
           locationId: cr.locationId,
@@ -178,6 +179,20 @@ export class CustomerReturnService {
           referenceId: cr.id,
           performedBy: userId,
           notes: `Customer return credited to stock at "${cr.location.name}". Ref: ${cr.returnNumber}`
+        });
+
+        // 2. Increment global Product.stock counter to keep it in sync
+        const updatedProduct = await tx.product.update({
+          where: { id: item.productId },
+          data: { stock: { increment: item.quantity } },
+          select: { stock: true }
+        });
+
+        // 3. Auto-resolve stockStatus from the new quantity
+        const resolvedStatus = await resolveStockStatus(tx, item.productId, updatedProduct.stock);
+        await tx.product.update({
+          where: { id: item.productId },
+          data: { stockStatus: resolvedStatus }
         });
       }
 
