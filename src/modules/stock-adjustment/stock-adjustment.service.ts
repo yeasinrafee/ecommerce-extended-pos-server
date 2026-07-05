@@ -55,6 +55,32 @@ export class StockAdjustmentService {
   async getAdjustmentById(id: string) {
     const adj = await stockAdjustmentRepository.findById(id);
     if (!adj) throw new AppError(404, 'Stock Adjustment not found');
+
+    if (adj.status === StockAdjustmentStatus.DRAFT) {
+      const itemsWithStock = await Promise.all(
+        adj.items.map(async (item: any) => {
+          const stock = await prisma.stock.findUnique({
+            where: {
+              productId_locationId: {
+                productId: item.productId,
+                locationId: adj.locationId
+              }
+            }
+          });
+          const previousQuantity = stock?.quantity ?? 0;
+          return {
+            ...item,
+            previousQuantity,
+            currentQuantity: previousQuantity + item.quantityChanged
+          };
+        })
+      );
+      return {
+        ...adj,
+        items: itemsWithStock
+      };
+    }
+
     return adj;
   }
 
@@ -75,14 +101,22 @@ export class StockAdjustmentService {
       if (item.quantityChanged === 0) throw new AppError(400, `Quantity changed cannot be zero for product: ${item.productId}`);
     }
 
-    // Build items without previousQuantity/currentQuantity — those are only known at completion time
-    const itemsData = payload.items.map((item: any) => ({
-      productId: item.productId,
-      previousQuantity: 0, // placeholder — filled on complete()
-      quantityChanged: item.quantityChanged,
-      currentQuantity: 0,  // placeholder — filled on complete()
-      reason: item.reason ?? null
-    }));
+    // Build items with actual current stock quantities as snapshot/placeholder for DRAFT
+    const itemsData = await Promise.all(
+      payload.items.map(async (item: any) => {
+        const stock = await prisma.stock.findUnique({
+          where: { productId_locationId: { productId: item.productId, locationId: payload.locationId } }
+        });
+        const previousQuantity = stock?.quantity ?? 0;
+        return {
+          productId: item.productId,
+          previousQuantity,
+          quantityChanged: item.quantityChanged,
+          currentQuantity: previousQuantity + item.quantityChanged,
+          reason: item.reason ?? null
+        };
+      })
+    );
 
     return prisma.stockAdjustment.create({
       data: {
@@ -130,14 +164,27 @@ export class StockAdjustmentService {
         // Replace all items
         await tx.stockAdjustmentItem.deleteMany({ where: { stockAdjustmentId: id } });
 
-        const itemsData = payload.items.map((item: any) => ({
-          stockAdjustmentId: id,
-          productId: item.productId,
-          previousQuantity: 0,
-          quantityChanged: item.quantityChanged,
-          currentQuantity: 0,
-          reason: item.reason ?? null
-        }));
+        const itemsData = await Promise.all(
+          payload.items.map(async (item: any) => {
+            const stock = await tx.stock.findUnique({
+              where: {
+                productId_locationId: {
+                  productId: item.productId,
+                  locationId: payload.locationId ?? adj.locationId
+                }
+              }
+            });
+            const previousQuantity = stock?.quantity ?? 0;
+            return {
+              stockAdjustmentId: id,
+              productId: item.productId,
+              previousQuantity,
+              quantityChanged: item.quantityChanged,
+              currentQuantity: previousQuantity + item.quantityChanged,
+              reason: item.reason ?? null
+            };
+          })
+        );
 
         await tx.stockAdjustmentItem.createMany({ data: itemsData });
       }

@@ -33,7 +33,18 @@ export class StockAdjustmentRepository {
       orderBy: params.orderBy,
       include: {
         location: { select: { id: true, name: true } },
-        creator: { select: { id: true, email: true } }
+        creator: { select: { id: true, email: true } },
+        items: {
+          select: {
+            id: true,
+            productId: true,
+            previousQuantity: true,
+            quantityChanged: true,
+            currentQuantity: true,
+            reason: true,
+            product: { select: { id: true, name: true, sku: true } }
+          }
+        }
       }
     });
   }
