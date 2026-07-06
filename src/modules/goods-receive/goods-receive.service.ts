@@ -155,6 +155,11 @@ export class GoodsReceiveService {
 
       // 2. Adjust stocks and record movements
       for (const item of grn.items) {
+        // adjustStock already:
+        //  - Updates location-level stock (stocks table)
+        //  - Aggregates all location stocks and updates product.stock
+        //  - Auto-resolves and updates product.stockStatus
+        //  - Creates stock movement ledger entry
         await stockLedgerService.adjustStock(tx, {
           productId: item.productId,
           locationId: grn.locationId,
@@ -166,22 +171,11 @@ export class GoodsReceiveService {
           notes: `Received from supplier invoice/challan ${grn.billNumber ?? 'N/A'}`
         });
 
-        // Increment global Product.stock, clear defaultQuantity (marks as "stocked at least once"),
-        // then auto-resolve stockStatus
-        const updatedGrnProduct = await tx.product.update({
-          where: { id: item.productId },
-          data: {
-            stock: { increment: item.quantityAccepted },
-            // Setting defaultQuantity to 0 signals that this product has gone through GRN
-            // so the dashboard will never show "Pending" again — only IN_STOCK / LOW_STOCK / OUT_OF_STOCK
-            defaultQuantity: 0
-          },
-          select: { stock: true }
-        });
-        const resolvedStatus = await resolveStockStatus(tx, item.productId, updatedGrnProduct.stock);
+        // Clear defaultQuantity to signal product has gone through GRN flow
+        // (dashboard will never show "Pending" status again)
         await tx.product.update({
           where: { id: item.productId },
-          data: { stockStatus: resolvedStatus }
+          data: { defaultQuantity: 0 }
         });
 
         // 3. Update PO received quantity if linked

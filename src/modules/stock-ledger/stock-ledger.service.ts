@@ -100,7 +100,7 @@ export class StockLedgerService {
       ]);
     }
 
-    // 4. Update the stock quantity
+    // 4. Update the location-level stock quantity
     await tx.stock.update({
       where: { id: currentStock.id },
       data: { quantity: currentQuantity }
@@ -122,6 +122,22 @@ export class StockLedgerService {
       },
       tx
     );
+
+    // 6. Sync product.stock (aggregate across ALL locations) and product.stockStatus
+    const allLocationStocks = await tx.stock.findMany({
+      where: { productId, deletedAt: null },
+      select: { quantity: true }
+    });
+    const totalStock = allLocationStocks.reduce((sum, s) => sum + s.quantity, 0);
+    const newStockStatus = await resolveStockStatus(tx, productId, totalStock);
+
+    await tx.product.update({
+      where: { id: productId },
+      data: {
+        stock: totalStock,
+        stockStatus: newStockStatus
+      }
+    });
 
     return currentQuantity;
   }

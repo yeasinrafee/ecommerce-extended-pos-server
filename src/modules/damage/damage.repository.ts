@@ -34,7 +34,11 @@ export class DamageRepository {
       include: {
         location: { select: { id: true, name: true } },
         creator: { select: { id: true, email: true } },
-        items: { select: { quantity: true } }
+        items: {
+          include: {
+            product: { select: { id: true, name: true, sku: true } }
+          }
+        }
       }
     });
   }

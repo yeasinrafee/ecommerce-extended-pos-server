@@ -677,8 +677,8 @@ export class StockService {
     if (params.movementType) where.movementType = params.movementType;
     if (params.startDate || params.endDate) {
       where.createdAt = {};
-      if (params.startDate) where.createdAt.gte = new Date(params.startDate);
-      if (params.endDate) where.createdAt.lte = new Date(params.endDate);
+      if (params.startDate) where.createdAt.gte = new Date(params.startDate + 'T00:00:00.000Z');
+      if (params.endDate) where.createdAt.lte = new Date(params.endDate + 'T23:59:59.999Z');
     }
 
     const [data, total] = await Promise.all([
@@ -729,8 +729,8 @@ export class StockService {
     if (params.status) where.status = params.status;
     if (params.startDate || params.endDate) {
       where.createdAt = {};
-      if (params.startDate) where.createdAt.gte = new Date(params.startDate);
-      if (params.endDate) where.createdAt.lte = new Date(params.endDate);
+      if (params.startDate) where.createdAt.gte = new Date(params.startDate + 'T00:00:00.000Z');
+      if (params.endDate) where.createdAt.lte = new Date(params.endDate + 'T23:59:59.999Z');
     }
 
     const [data, total] = await Promise.all([
@@ -776,8 +776,8 @@ export class StockService {
     if (params.locationId) where.locationId = params.locationId;
     if (params.startDate || params.endDate) {
       where.createdAt = {};
-      if (params.startDate) where.createdAt.gte = new Date(params.startDate);
-      if (params.endDate) where.createdAt.lte = new Date(params.endDate);
+      if (params.startDate) where.createdAt.gte = new Date(params.startDate + 'T00:00:00.000Z');
+      if (params.endDate) where.createdAt.lte = new Date(params.endDate + 'T23:59:59.999Z');
     }
     if (params.reason) {
       where.items = {
@@ -847,9 +847,9 @@ export class StockService {
     if (params.startDate || params.endDate) {
       where.createdAt = {};
       if (params.startDate)
-        (where.createdAt as any).gte = new Date(params.startDate);
+        (where.createdAt as any).gte = new Date(params.startDate + 'T00:00:00.000Z');
       if (params.endDate)
-        (where.createdAt as any).lte = new Date(params.endDate);
+        (where.createdAt as any).lte = new Date(params.endDate + 'T23:59:59.999Z');
     }
 
     const [data, total] = await Promise.all([
