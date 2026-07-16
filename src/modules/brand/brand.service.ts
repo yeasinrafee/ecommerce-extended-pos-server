@@ -13,15 +13,26 @@ const getBrands = async ({ page = 1, limit = 10, searchTerm }: BrandListQuery = 
 		? { name: { contains: searchTerm, mode: 'insensitive' } }
 		: {};
 
-	const [data, total] = await Promise.all([
+	const [brands, total] = await Promise.all([
 		prisma.brand.findMany({
 			where,
 			skip,
 			take: limit,
-			orderBy: { createdAt: 'desc' }
+			orderBy: { createdAt: 'desc' },
+			include: {
+				_count: {
+					select: { products: { where: { deletedAt: null } } }
+				}
+			}
 		}),
 		prisma.brand.count({ where })
 	]);
+
+	const data = brands.map((b) => ({
+		...b,
+		productCount: b._count.products,
+		_count: undefined
+	}));
 
 	return {
 		data,
@@ -116,6 +127,23 @@ const deleteBrand = async (id: string) => {
 	const existing = await prisma.brand.findUnique({ where: { id } });
 	if (!existing) {
 		throw new AppError(404, 'Brand not found', [{ message: 'No brand exists with the provided id', code: 'NOT_FOUND' }]);
+	}
+
+	// Block delete if any active products use this brand
+	const linkedProducts = await prisma.product.findMany({
+		where: { brandId: id, deletedAt: null },
+		select: { id: true, name: true },
+		take: 5
+	});
+
+	if (linkedProducts.length > 0) {
+		const names = linkedProducts.map((p) => `"${p.name}"`).join(', ');
+		throw new AppError(409, 'Cannot delete — brand is linked to products', [
+			{
+				message: `This brand is used by: ${names}. Remove the brand from those products first.`,
+				code: 'BRAND_HAS_PRODUCTS'
+			}
+		]);
 	}
 
 	const previousPublicId = getPublicIdFromUrl(existing.image) ?? null;

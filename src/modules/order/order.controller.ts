@@ -1,11 +1,13 @@
 import { Request, Response, NextFunction } from 'express';
+import { OrderStatus } from '@prisma/client';
 import { 
   createOrderService, 
   getAllOrdersService, 
   getOrdersByCustomerService, 
   getOrderByIdService, 
   updateOrderStatusService,
-  cancelOrderService 
+  cancelOrderService,
+  completeOrderService
 } from './order.service.js';
 
 export const createOrder = async (req: Request, res: Response, next: NextFunction) => {
@@ -30,8 +32,9 @@ export const getAllOrders = async (req: Request, res: Response, next: NextFuncti
     const page = parseInt(req.query.page as string) || 1;
     const limit = parseInt(req.query.limit as string) || 10;
     const searchTerm = req.query.searchTerm as string;
+    const status = req.query.status as OrderStatus | undefined;
 
-    const result = await getAllOrdersService(page, limit, searchTerm);
+    const result = await getAllOrdersService(page, limit, searchTerm, status);
     res.status(200).json({ success: true, ...result });
   } catch (error) {
     next(error);
@@ -100,11 +103,22 @@ export const cancelOrder = async (req: Request, res: Response, next: NextFunctio
   }
 };
 
+export const completeOrder = async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const id = req.params.id as string;
+    const order = await completeOrderService(id);
+    res.status(200).json({ success: true, data: order, message: 'Order completed successfully (PENDING → SALE)' });
+  } catch (error) {
+    next(error);
+  }
+};
+
 export const orderController = {
   createOrder,
   getAllOrders,
   getOrdersByCustomer,
   getOrderById,
   updateOrderStatus,
-  cancelOrder
+  cancelOrder,
+  completeOrder
 };

@@ -104,6 +104,17 @@ const attachOfferDetails = (products: any[]) => {
 	});
 };
 
+const generateUniqueBarcodeId = async (tx: Prisma.TransactionClient): Promise<string> => {
+	while (true) {
+		// 12-digit numeric barcode (EAN-13 style length without check digit)
+		const barcodeId = Array.from({ length: 11 }, () => Math.floor(Math.random() * 10)).join('');
+		const found = await tx.product.findUnique({ where: { barcodeId }, select: { id: true } });
+		if (!found) {
+			return barcodeId;
+		}
+	}
+};
+
 const generateUniqueSlugTx = async (tx: Prisma.TransactionClient, name: string) => {
 	const base = toSlug(name);
 	let slug = base;
@@ -170,6 +181,18 @@ const createProduct = async (payload: CreateProductDto) => {
 			}
 		}
 
+		if (payload.barcodeId?.trim()) {
+			const existingBarcode = await tx.product.findUnique({
+				where: { barcodeId: payload.barcodeId.trim() },
+				select: { id: true }
+			});
+			if (existingBarcode) {
+				throw new AppError(400, 'Barcode ID already exists', [
+					{ message: 'Another product uses the provided barcodeId', code: 'BARCODE_CONFLICT' }
+				]);
+			}
+		}
+
 		const categoryIds = Array.from(new Set(payload.categoryIds));
 		const tagIds = Array.from(new Set(payload.tagIds ?? []));
 
@@ -218,6 +241,9 @@ const createProduct = async (payload: CreateProductDto) => {
 
 		const attributeMap = new Map(Array.from(normalizedAttributeMap.entries()).map(([key, value]) => [key, value.id]));
 		const slug = await generateUniqueSlugTx(tx, payload.name);
+		const barcodeId = payload.barcodeId?.trim()
+			? payload.barcodeId.trim()
+			: await generateUniqueBarcodeId(tx);
 		const volume = payload.length != null && payload.width != null && payload.height != null
 			? payload.length * payload.width * payload.height
 			: null;
@@ -227,6 +253,7 @@ const createProduct = async (payload: CreateProductDto) => {
 			data: {
 				name: payload.name,
 				slug,
+				barcodeId,
 				shortDescription: payload.shortDescription ?? null,
 				description: payload.description,
 				Baseprice: payload.basePrice,
@@ -234,7 +261,9 @@ const createProduct = async (payload: CreateProductDto) => {
 				finalPrice,
 				discountType: payload.discountType,
 				discountValue: payload.discountType === 'NONE' ? null : payload.discountValue ?? null,
-				stock: payload.stock,
+				// stock starts at 0 — actual stock is only set through GRN/inventory flow
+				stock: 0,
+				defaultQuantity: 0,
 				weight: payload.weight ?? null,
 				length: payload.length ?? null,
 				width: payload.width ?? null,
@@ -247,7 +276,8 @@ const createProduct = async (payload: CreateProductDto) => {
 				image: payload.image,
 				galleryImages: payload.galleryImages,
 				status: payload.status,
-				stockStatus: payload.stockStatus
+				// stockStatus is always OUT_OF_STOCK on creation — only GRN sets it to IN_STOCK
+				stockStatus: 'OUT_OF_STOCK'
 			}
 		});
 
@@ -338,6 +368,7 @@ const getProducts = async ({
 	page = 1,
 	limit = 20,
 	searchTerm,
+	barcodeId,
 	category,
 	brand,
 	minPrice,
@@ -348,6 +379,10 @@ const getProducts = async ({
 	const where: Prisma.ProductWhereInput = {
 		deletedAt: null
 	};
+
+	if (barcodeId) {
+		where.barcodeId = { contains: barcodeId, mode: 'insensitive' };
+	}
 
 	if (searchTerm) {
 		where.OR = [
@@ -554,6 +589,47 @@ const getProductById = async (id: string) => {
 const getProductBySlug = async (slug: string) => {
 	return prisma.product.findFirst({
 		where: { slug, deletedAt: null },
+		include: {
+			brand: true,
+			categories: { include: { category: true } },
+			tags: { include: { tag: true } },
+			additionalInformations: true,
+			seos: true,
+			productVariations: { where: { deletedAt: null }, include: { attribute: true } },
+			productReviews: {
+				where: { parentId: null },
+				include: {
+					user: {
+						select: {
+							id: true,
+							email: true,
+							customers: { select: { phone: true } },
+							admins: { select: { name: true, image: true } }
+						}
+					},
+					replies: {
+						include: {
+							user: {
+								select: {
+									id: true,
+									email: true,
+									customers: { select: { phone: true } },
+									admins: { select: { name: true, image: true } }
+								}
+							}
+						},
+						orderBy: { createdAt: 'asc' }
+					}
+				},
+				orderBy: { createdAt: 'desc' }
+			}
+		}
+	});
+};
+
+const getProductByBarcodeId = async (barcodeId: string) => {
+	return prisma.product.findFirst({
+		where: { barcodeId, deletedAt: null },
 		include: {
 			brand: true,
 			categories: { include: { category: true } },
@@ -802,7 +878,7 @@ const updateProduct = async (id: string, payload: UpdateProductDto) => {
 				finalPrice,
 				discountType: payload.discountType,
 				discountValue: payload.discountType === 'NONE' ? null : payload.discountValue ?? null,
-				stock: payload.stock,
+				// Do NOT overwrite stock — actual stock is managed by GRN/inventory flow only.
 				weight: payload.weight ?? null,
 				length: payload.length ?? null,
 				width: payload.width ?? null,
@@ -814,8 +890,8 @@ const updateProduct = async (id: string, payload: UpdateProductDto) => {
 				...(payload.brandId !== undefined && { brandId: payload.brandId }),
 				image: payload.image,
 				galleryImages: payload.galleryImages,
-				status: payload.status,
-				stockStatus: payload.stockStatus
+				status: payload.status
+				// stockStatus is intentionally omitted — it is managed by GRN/inventory
 			}
 		});
 
@@ -958,11 +1034,11 @@ const patchProduct = async (id: string, payload: PatchProductDto) => {
 		]);
 	}
 
+	// stockStatus is NOT patchable — it is derived automatically from product.stock
 	return prisma.product.update({
 		where: { id },
 		data: {
-			...(payload.status !== undefined && { status: payload.status }),
-			...(payload.stockStatus !== undefined && { stockStatus: payload.stockStatus })
+			...(payload.status !== undefined && { status: payload.status })
 		},
 		include: {
 			brand: true,
@@ -976,11 +1052,11 @@ const patchProduct = async (id: string, payload: PatchProductDto) => {
 };
 
 const bulkPatchProducts = async (payload: BulkPatchProductDto) => {
+	// stockStatus is NOT bulk-patchable — it is derived automatically from product.stock
 	const result = await prisma.product.updateMany({
 		where: { id: { in: payload.ids } },
 		data: {
-			...(payload.status !== undefined && { status: payload.status }),
-			...(payload.stockStatus !== undefined && { stockStatus: payload.stockStatus })
+			...(payload.status !== undefined && { status: payload.status })
 		}
 	});
 	return result;
@@ -993,6 +1069,7 @@ export const productService = {
 	getAllProducts,
 	getProductById,
 	getProductBySlug,
+	getProductByBarcodeId,
 	getHotDeals,
 	getNewArrivals,
 	getOfferProducts,

@@ -24,6 +24,8 @@ model Order {
     extraShippingCharge Float       @default(0)
     finalShippingCharge Float       @default(0)
     orderStatus         OrderStatus @default(PENDING)
+    totalCost           Float       @default(0)
+    totalProfit          Float       @default(0)
 
     tax Float @default(0)
 

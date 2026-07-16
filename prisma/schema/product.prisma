@@ -1,5 +1,6 @@
 model Product {
   id                String        @id @default(cuid())
+  barcodeId         String        @unique
   name              String
   slug              String        @unique
   shortDescription  String?
@@ -10,6 +11,7 @@ model Product {
   discountType      DiscountType?
   discountValue     Float?
   stock             Int
+  defaultQuantity   Int           @default(1)
   avgRating         Float         @default(0)
   totalRatings      Int           @default(0)
   totalReviews      Int           @default(0)
@@ -42,12 +44,20 @@ model Product {
 
   orderItems OrderItem[]
 
-  stockProducts         StockProduct[]
-  stockProductTransfers StockProductTransfer[]
-
   offerProducts OfferProduct[]
 
   posOrderItems PosOrderItem[]
+
+  stocks                Stock[]
+  purchaseOrderItems    PurchaseOrderItem[]
+  goodsReceiveItems     GoodsReceiveItem[]
+  stockMovements        StockMovement[]
+  stockTransferItems    StockTransferItem[]
+  supplierReturnItems   SupplierReturnItem[]
+  customerReturnItems   CustomerReturnItem[]
+  stockAdjustmentItems  StockAdjustmentItem[]
+  damageItems           DamageItem[]
+  lowStockConfigs       LowStockConfig[]
 }
 
 model ProductReview {

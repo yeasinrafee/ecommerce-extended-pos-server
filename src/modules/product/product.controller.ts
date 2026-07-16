@@ -61,7 +61,6 @@ const createProductBodySchema = z.object({
 	discountValue: nullableNumberSchema,
 	discountStartDate: nullableDateSchema,
 	discountEndDate: nullableDateSchema,
-	stock: z.coerce.number().int().nonnegative(),
 	sku: z.preprocess((value) => {
 		if (value === '' || value === null || value === undefined) {
 			return null;
@@ -72,6 +71,19 @@ const createProductBodySchema = z.object({
 	length: nullablePositiveNumberSchema,
 	width: nullablePositiveNumberSchema,
 	height: nullablePositiveNumberSchema,
+	barcodeId: z.preprocess((value) => {
+		if (value === '' || value === null || value === undefined) {
+			return null;
+		}
+		const str = String(value).trim();
+		if (str === '') return null;
+		// must be a whole number (digits only, no decimals)
+		if (!/^\d+$/.test(str)) {
+			throw new Error('Barcode ID must be a numeric value');
+		}
+		// strip leading zeros and return as a clean numeric string
+		return String(parseInt(str, 10));
+	}, z.string().nullable()),
 	brandId: z.preprocess((value) => {
 		if (value === '' || value === null || value === undefined) {
 			return undefined;
@@ -79,7 +91,7 @@ const createProductBodySchema = z.object({
 		return String(value).trim();
 	}, z.string().min(1).optional()),
 	status: z.enum(['ACTIVE', 'INACTIVE']),
-	stockStatus: z.enum(['IN_STOCK', 'LOW_STOCK', 'OUT_OF_STOCK']),
+	// stockStatus is computed automatically — not accepted from client on create
 	categories: z.array(z.string().trim().min(1)).min(1, 'At least one category is required'),
 	tags: z.array(z.string().trim().min(1)).optional(),
 	galleryImagesMeta: z.array(z.object({ id: z.string().trim().min(1), name: z.string().trim().min(1) })),
@@ -117,17 +129,6 @@ const createProductBodySchema = z.object({
 		seoKeywords: z.array(z.string().trim().min(1))
 	}).nullable()
 }).superRefine((data, ctx) => {
-	const hasWeight = data.weight != null;
-	const hasDimensions = data.length != null && data.width != null && data.height != null;
-
-	if (!hasWeight && !hasDimensions) {
-		ctx.addIssue({
-			code: z.ZodIssueCode.custom,
-			path: ['weight'],
-			message: 'Provide weight or all three dimensions'
-		});
-	}
-
 	if (data.discountType !== 'NONE' && data.discountValue == null) {
 		ctx.addIssue({
 			code: z.ZodIssueCode.custom,
@@ -177,12 +178,6 @@ const createProduct = async (req: Request, res: Response) => {
 	const mainImageFile = files?.mainImage?.[0] ?? null;
 	const galleryFiles = files?.galleryImages ?? [];
 
-	if (!mainImageFile) {
-		throw new AppError(400, 'Main image is required', [
-			{ message: 'Please upload a product image', code: 'MAIN_IMAGE_REQUIRED' }
-		]);
-	}
-
 	const parsed = createProductBodySchema.parse({
 		name: req.body.name,
 		shortDescription: req.body.shortDescription,
@@ -193,15 +188,14 @@ const createProduct = async (req: Request, res: Response) => {
 		discountValue: req.body.discountValue,
 		discountStartDate: req.body.discountStartDate,
 		discountEndDate: req.body.discountEndDate,
-		stock: req.body.stock,
 		sku: req.body.sku,
 		weight: req.body.weight,
 		length: req.body.length,
 		width: req.body.width,
 		height: req.body.height,
+		barcodeId: req.body.barcodeId,
 		brandId: req.body.brandId,
 		status: req.body.status,
-		stockStatus: req.body.stockStatus,
 		categories: parseJsonField(req.body.categories, [] as string[]),
 		tags: parseJsonField(req.body.tags, [] as string[]),
 		galleryImagesMeta: parseJsonField(req.body.galleryImagesMeta, [] as { id: string; name: string }[]),
@@ -234,14 +228,18 @@ const createProduct = async (req: Request, res: Response) => {
 	const uploadedPublicIds: string[] = [];
 
 	try {
-		const [mainImageUpload] = await uploadMultipleFilesToCloudinary([mainImageFile], {
-			projectFolder: 'products',
-			entityId: uploadEntityId,
-			subFolder: 'main',
-			fileNamePrefix: 'product'
-		});
+		const mainImageUpload = mainImageFile
+			? (await uploadMultipleFilesToCloudinary([mainImageFile], {
+					projectFolder: 'products',
+					entityId: uploadEntityId,
+					subFolder: 'main',
+					fileNamePrefix: 'product'
+				}))[0]
+			: null;
 
-		uploadedPublicIds.push(mainImageUpload.publicId);
+		if (mainImageUpload) {
+			uploadedPublicIds.push(mainImageUpload.publicId);
+		}
 
 		const galleryUploads = galleryFiles.length > 0
 			? await uploadMultipleFilesToCloudinary(galleryFiles, {
@@ -264,6 +262,7 @@ const createProduct = async (req: Request, res: Response) => {
 
 		const created = await productService.createProduct({
 			name: parsed.name,
+			barcodeId: parsed.barcodeId,
 			shortDescription: parsed.shortDescription,
 			description: parsed.description,
 			basePrice: parsed.basePrice,
@@ -272,17 +271,15 @@ const createProduct = async (req: Request, res: Response) => {
 			discountValue: parsed.discountValue,
 			discountStartDate: parsed.discountStartDate,
 			discountEndDate: parsed.discountEndDate,
-			stock: parsed.stock,
 			sku: parsed.sku,
 			weight: parsed.weight,
 			length: parsed.length,
 			width: parsed.width,
 			height: parsed.height,
 			brandId: parsed.brandId,
-			image: mainImageUpload.secureUrl,
+			image: mainImageUpload?.secureUrl ?? null,
 			galleryImages: galleryUploads.map((uploaded) => uploaded.secureUrl),
 			status: parsed.status,
-			stockStatus: parsed.stockStatus,
 			categoryIds: parsed.categories,
 			tagIds: parsed.tags,
 			attributes: parsed.attributes.map((attribute) => ({
@@ -320,6 +317,7 @@ const getProducts = async (req: Request, res: Response) => {
 	const page = Math.max(1, Number(req.query.page ?? 1));
 	const limit = Math.max(1, Number(req.query.limit ?? 20));
 	const searchTerm = req.query.searchTerm ? String(req.query.searchTerm) : undefined;
+	const barcodeId = req.query.barcodeId ? String(req.query.barcodeId) : undefined;
 	const category = req.query.category ? (Array.isArray(req.query.category) ? req.query.category as string[] : String(req.query.category)) : undefined;
 	const brand = req.query.brand ? (Array.isArray(req.query.brand) ? req.query.brand as string[] : String(req.query.brand)) : undefined;
 	const minPrice = req.query.minPrice ? Number(req.query.minPrice) : undefined;
@@ -329,6 +327,7 @@ const getProducts = async (req: Request, res: Response) => {
 		page,
 		limit,
 		searchTerm,
+		barcodeId,
 		category,
 		brand,
 		minPrice,
@@ -390,6 +389,16 @@ const getProductBySlug = async (req: Request, res: Response) => {
 	sendResponse({ res, statusCode: 200, success: true, message: 'Product retrieved', data: product });
 };
 
+const getProductByBarcodeId = async (req: Request, res: Response) => {
+	const barcodeId = String(req.params.barcodeId);
+	const product = await productService.getProductByBarcodeId(barcodeId);
+	if (!product) {
+		throw new AppError(404, 'Product not found', [{ message: 'No product found with the provided barcode ID', code: 'PRODUCT_NOT_FOUND' }]);
+	}
+
+	sendResponse({ res, statusCode: 200, success: true, message: 'Product retrieved', data: product });
+};
+
 const getHotDeals = async (req: Request, res: Response) => {
 	const count = req.query.count ? Number(req.query.count) : 10;
 	const products = await productService.getHotDeals(count);
@@ -428,7 +437,6 @@ const updateProductBodySchema = z.object({
 	discountValue: nullableNumberSchema,
 	discountStartDate: nullableDateSchema,
 	discountEndDate: nullableDateSchema,
-	stock: z.coerce.number().int().nonnegative(),
 	sku: z.preprocess((value) => {
 		if (value === '' || value === null || value === undefined) return null;
 		return String(value).trim();
@@ -444,7 +452,7 @@ const updateProductBodySchema = z.object({
 		return String(value).trim();
 	}, z.string().min(1).optional()),
 	status: z.enum(['ACTIVE', 'INACTIVE']),
-	stockStatus: z.enum(['IN_STOCK', 'LOW_STOCK', 'OUT_OF_STOCK']),
+	// stockStatus is computed automatically — not accepted from client on update
 	categories: z.array(z.string().trim().min(1)).min(1, 'At least one category is required'),
 	tags: z.array(z.string().trim().min(1)).optional(),
 	/** "true" = keep existing main image; "false" = a new file is being uploaded */
@@ -480,13 +488,6 @@ const updateProductBodySchema = z.object({
 		seoKeywords: z.array(z.string().trim().min(1))
 	}).nullable()
 }).superRefine((data, ctx) => {
-	const hasWeight = data.weight != null;
-	const hasDimensions = data.length != null && data.width != null && data.height != null;
-
-	if (!hasWeight && !hasDimensions) {
-		ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['weight'], message: 'Provide weight or all three dimensions' });
-	}
-
 	if (data.discountType !== 'NONE' && data.discountValue == null) {
 		ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['discountValue'], message: 'Discount value is required when a discount type is selected' });
 	}
@@ -526,7 +527,6 @@ const updateProduct = async (req: Request, res: Response) => {
 		discountValue: req.body.discountValue,
 		discountStartDate: req.body.discountStartDate,
 		discountEndDate: req.body.discountEndDate,
-		stock: req.body.stock,
 		sku: req.body.sku,
 		weight: req.body.weight,
 		length: req.body.length,
@@ -534,7 +534,6 @@ const updateProduct = async (req: Request, res: Response) => {
 		height: req.body.height,
 		brandId: req.body.brandId,
 		status: req.body.status,
-		stockStatus: req.body.stockStatus,
 		keepMainImage: req.body.keepMainImage,
 		categories: parseJsonField(req.body.categories, [] as string[]),
 		tags: parseJsonField(req.body.tags, [] as string[]),
@@ -545,12 +544,8 @@ const updateProduct = async (req: Request, res: Response) => {
 		seo: parseJsonField(req.body.seo, null as { metaTitle: string; metaDescription: string; seoKeywords: string[] } | null)
 	});
 
-	// Validate keepMainImage vs file presence
-	if (parsed.keepMainImage === 'false' && !mainImageFile) {
-		throw new AppError(400, 'Main image is required', [
-			{ message: 'A new main image file must be uploaded when replacing the current image', code: 'MAIN_IMAGE_REQUIRED' }
-		]);
-	}
+	// Validate keepMainImage vs file presence — if false and no file, image will be cleared (set to null)
+	// No error thrown — image is optional
 
 	// Validate new gallery files match metadata
 	if (galleryFiles.length !== parsed.galleryImagesMeta.length) {
@@ -583,12 +578,12 @@ const updateProduct = async (req: Request, res: Response) => {
 
 	try {
 		// ── Main image ──────────────────────────────────────────────────────────
-		let finalMainImageUrl: string;
+		let finalMainImageUrl: string | null;
 
 		if (parsed.keepMainImage === 'true') {
-			finalMainImageUrl = existingProduct.image as string;
-		} else {
-			const [mainUpload] = await uploadMultipleFilesToCloudinary([mainImageFile!], {
+			finalMainImageUrl = existingProduct.image as string | null;
+		} else if (mainImageFile) {
+			const [mainUpload] = await uploadMultipleFilesToCloudinary([mainImageFile], {
 				projectFolder: 'products',
 				entityId: id,
 				subFolder: 'main',
@@ -596,6 +591,9 @@ const updateProduct = async (req: Request, res: Response) => {
 			});
 			uploadedPublicIds.push(mainUpload.publicId);
 			finalMainImageUrl = mainUpload.secureUrl;
+		} else {
+			// keepMainImage === 'false' and no new file → clear the image
+			finalMainImageUrl = null;
 		}
 
 		// ── New gallery images ──────────────────────────────────────────────────
@@ -646,7 +644,6 @@ const updateProduct = async (req: Request, res: Response) => {
 			discountValue: parsed.discountValue,
 			discountStartDate: parsed.discountStartDate,
 			discountEndDate: parsed.discountEndDate,
-			stock: parsed.stock,
 			sku: parsed.sku,
 			weight: parsed.weight,
 			length: parsed.length,
@@ -656,7 +653,6 @@ const updateProduct = async (req: Request, res: Response) => {
 			image: finalMainImageUrl,
 			galleryImages: finalGalleryUrls,
 			status: parsed.status,
-			stockStatus: parsed.stockStatus,
 			categoryIds: parsed.categories,
 			tagIds: parsed.tags,
 			attributes: resolvedAttributes,
@@ -697,11 +693,11 @@ const updateProduct = async (req: Request, res: Response) => {
 
 const bulkPatchProductsBodySchema = z.object({
 	ids: z.array(z.string().trim().min(1)).min(1, 'At least one product id is required'),
-	status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
-	stockStatus: z.enum(['IN_STOCK', 'LOW_STOCK', 'OUT_OF_STOCK']).optional()
+	status: z.enum(['ACTIVE', 'INACTIVE']).optional()
+	// stockStatus is intentionally excluded — it is computed automatically from stock
 }).refine(
-	(data) => data.status !== undefined || data.stockStatus !== undefined,
-	{ message: 'At least one field (status or stockStatus) must be provided' }
+	(data) => data.status !== undefined,
+	{ message: 'status must be provided' }
 );
 
 const bulkPatchProducts = async (req: Request, res: Response) => {
@@ -713,11 +709,11 @@ const bulkPatchProducts = async (req: Request, res: Response) => {
 // ─── Patch (partial quick-update) ────────────────────────────────────────────
 
 const patchProductBodySchema = z.object({
-	status: z.enum(['ACTIVE', 'INACTIVE']).optional(),
-	stockStatus: z.enum(['IN_STOCK', 'LOW_STOCK', 'OUT_OF_STOCK']).optional()
+	status: z.enum(['ACTIVE', 'INACTIVE']).optional()
+	// stockStatus is intentionally excluded — it is computed automatically from stock
 }).refine(
-	(data) => data.status !== undefined || data.stockStatus !== undefined,
-	{ message: 'At least one field (status or stockStatus) must be provided' }
+	(data) => data.status !== undefined,
+	{ message: 'status must be provided' }
 );
 
 const patchProduct = async (req: Request, res: Response) => {
@@ -737,6 +733,7 @@ export const productController = {
 	getOfferProducts,
  	getProductById,
 	getProductBySlug,
+	getProductByBarcodeId,
  	deleteProduct,
  	updateProduct,
  	patchProduct,

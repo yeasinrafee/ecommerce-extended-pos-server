@@ -37,9 +37,78 @@ enum Status {
 
 enum OrderStatus {
   PENDING
-  CONFIRMED
-  SHIPPED
-  DELIVERED
+  SALE
+  RETURNED
+}
+
+enum LocationType {
+  WAREHOUSE
+  STORE
+}
+
+enum PurchaseOrderStatus {
+  DRAFT
+  PENDING
+  APPROVED
   CANCELLED
+}
+
+enum GoodsReceiveStatus {
+  DRAFT
+  RECEIVED
+  CANCELLED
+}
+
+enum StockTransferStatus {
+  DRAFT
+  PENDING
+  APPROVED
+  IN_TRANSIT
+  RECEIVED
+  CANCELLED
+}
+
+enum SupplierReturnStatus {
+  DRAFT
+  COMPLETED
+  CANCELLED
+}
+
+enum CustomerReturnStatus {
+  PENDING
+  REFUNDED
+  CANCELLED
+}
+
+enum StockAdjustmentStatus {
+  DRAFT
+  COMPLETED
+  CANCELLED
+}
+
+enum DamageStatus {
+  DRAFT
+  COMPLETED
+  CANCELLED
+}
+
+enum DamageReason {
+  DAMAGED
+  BROKEN
+  LOST
+  EXPIRED
+}
+
+enum StockMovementType {
+  PURCHASE
+  TRANSFER_IN
+  TRANSFER_OUT
+  SALE
+  CUSTOMER_RETURN
+  SUPPLIER_RETURN
+  ADJUSTMENT_IN
+  ADJUSTMENT_OUT
+  DAMAGE
+  EXPIRED
 }
 

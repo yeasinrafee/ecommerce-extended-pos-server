@@ -1,8 +1,9 @@
 import crypto from 'node:crypto';
-import { DiscountType, OrderStatus, PaymentMethod, PaymentStatus, Prisma } from '@prisma/client';
+import { DiscountType, OrderStatus, PaymentMethod, PaymentStatus, Prisma, StockMovementType } from '@prisma/client';
 import { AppError } from '../../common/errors/app-error.js';
 import { prisma } from '../../config/prisma.js';
 import { posPaymentService } from '../pos-payment/pos-payment.service.js';
+import { stockLedgerService, resolveStockStatus } from '../stock-ledger/stock-ledger.service.js';
 import type { CreatePosBillInput, NormalizedPosBillLine, NormalizedPosPaymentLine, PosBillsListQuery, PosProductLineInput, PosProductsQuery, UpdatePosBillInput } from './pos.types.js';
 
 const productInclude = {
@@ -45,21 +46,22 @@ const getProducts = async ({ storeId, searchTerm }: PosProductsQuery = {}) => {
 	const where: Prisma.ProductWhereInput = {
 		deletedAt: null,
 		...(searchTerm ? { name: { contains: searchTerm, mode: 'insensitive' } } : {}),
-		...(storeId
-			? {
-				stockProducts: {
-					some: {
-						deletedAt: null,
-						quantity: { gt: 0 },
-						stock: {
-							storeId,
-							deletedAt: null,
-							orderStatus: OrderStatus.DELIVERED
+		stocks: {
+			some: {
+				deletedAt: null,
+				quantity: { gt: 0 },
+				...(storeId
+					? {
+						location: {
+							stores: {
+								id: storeId,
+								deletedAt: null
+							}
 						}
 					}
-				}
+					: {})
 			}
-			: {})
+		}
 	};
 
 	const products = await prisma.product.findMany({
@@ -72,11 +74,20 @@ const getProducts = async ({ storeId, searchTerm }: PosProductsQuery = {}) => {
 	return products.map(transformPosProduct);
 };
 
-const getBills = async ({ page = 1, limit = 10, paymentStatus }: PosBillsListQuery = {}) => {
+const getBills = async ({ page = 1, limit = 10, paymentStatus, searchTerm }: PosBillsListQuery = {}) => {
 	const skip = (page - 1) * limit;
 	const where: Prisma.PosOrderWhereInput = {
 		deletedAt: null,
-		...(paymentStatus ? { paymentStatus } : {})
+		...(paymentStatus ? { paymentStatus } : {}),
+		...(searchTerm
+			? {
+				OR: [
+					{ invoiceNumber: { contains: searchTerm, mode: 'insensitive' } },
+					{ user: { email: { contains: searchTerm, mode: 'insensitive' } } },
+					{ user: { admins: { some: { name: { contains: searchTerm, mode: 'insensitive' } } } } },
+				]
+			}
+			: {})
 	};
 
 	const [orders, total] = await Promise.all([
@@ -517,6 +528,8 @@ const normalizeCreatePosBillPayload = (payload: CreatePosBillInput) => {
 	const storeId = toTrimmedString(payload.storeId) || null;
 	const orderDiscount = normalizeOrderDiscountInput(payload.discountType, payload.discountValue);
 	const payments = normalizePaymentLines(payload.payments);
+	// tax is always a percentage value (e.g. 7 means 7%)
+	const taxPercent = Math.max(0, toFiniteNumber(payload.tax) ?? 0);
 
 	let lines: NormalizedPosBillLine[] = [];
 
@@ -600,6 +613,7 @@ const normalizeCreatePosBillPayload = (payload: CreatePosBillInput) => {
 		storeId,
 		lines: Array.from(grouped.values()),
 		orderDiscount,
+		taxPercent,
 		payments
 	};
 };
@@ -628,129 +642,61 @@ const decrementStoreStockProducts = async (
 	tx: Prisma.TransactionClient,
 	storeId: string,
 	productId: string,
-	requiredQuantity: number
+	requiredQuantity: number,
+	orderId: string,
+	userId: string
 ) => {
-	const stockProducts = await tx.stockProduct.findMany({
-		where: {
-			productId,
-			deletedAt: null,
-			quantity: { gt: 0 },
-			stock: {
-				storeId,
-				deletedAt: null
-			}
-		},
-		orderBy: { createdAt: 'asc' },
-		select: {
-			id: true,
-			stockId: true,
-			quantity: true,
-			purchasePrice: true,
-			totalPrice: true
-		}
+	const store = await tx.store.findUnique({
+		where: { id: storeId },
+		select: { locationId: true }
 	});
-
-	const availableQuantity = stockProducts.reduce((sum, item) => sum + item.quantity, 0);
-	if (availableQuantity < requiredQuantity) {
-		throw new AppError(400, 'Insufficient stock in store', [
-			{ field: 'products', message: `Insufficient store stock for product ${productId}`, code: 'INSUFFICIENT_STORE_STOCK' }
-		]);
+	if (!store || !store.locationId) {
+		throw new AppError(400, `Store ${storeId} is not associated with any location.`);
 	}
+	const locationId = store.locationId;
 
-	let remaining = requiredQuantity;
-
-	for (const stockProduct of stockProducts) {
-		if (remaining <= 0) break;
-		const decrementBy = Math.min(remaining, stockProduct.quantity);
-		if (decrementBy <= 0) continue;
-
-		const priceDelta = Number((decrementBy * stockProduct.purchasePrice).toFixed(2));
-		const nextTotalPrice = Math.max(0, Number((stockProduct.totalPrice - priceDelta).toFixed(2)));
-
-		await tx.stockProduct.update({
-			where: { id: stockProduct.id },
-			data: {
-				quantity: { decrement: decrementBy },
-				totalPrice: nextTotalPrice
-			}
-		});
-
-		const stockUpdate = await tx.stock.updateMany({
-			where: {
-				id: stockProduct.stockId,
-				totalProductQuantity: { gte: decrementBy },
-				grandTotal: { gte: priceDelta }
-			},
-			data: {
-				totalProductQuantity: { decrement: decrementBy },
-				grandTotal: { decrement: priceDelta }
-			}
-		});
-
-		if (stockUpdate.count === 0) {
-			throw new AppError(400, 'Stock summary update failed', [
-				{ field: 'stocks', message: `Unable to update stock totals for stock ${stockProduct.stockId}`, code: 'STOCK_SUMMARY_UPDATE_FAILED' }
-			]);
-		}
-
-		remaining -= decrementBy;
-	}
-
-	if (remaining > 0) {
-		throw new AppError(400, 'Insufficient stock in store', [
-			{ field: 'products', message: `Insufficient store stock for product ${productId}`, code: 'INSUFFICIENT_STORE_STOCK' }
-		]);
-	}
+	// Perform atomic stock decrement and ledger entry
+	await stockLedgerService.adjustStock(tx, {
+		productId,
+		locationId,
+		quantityChanged: -requiredQuantity,
+		movementType: StockMovementType.SALE,
+		referenceType: 'PosOrder',
+		referenceId: orderId,
+		performedBy: userId,
+		notes: `POS Sale Order ${orderId}`
+	});
 };
 
 const incrementStoreStockProducts = async (
 	tx: Prisma.TransactionClient,
 	storeId: string,
 	productId: string,
-	restoredQuantity: number
+	restoredQuantity: number,
+	orderId: string,
+	userId: string
 ) => {
 	if (restoredQuantity <= 0) return;
 
-	const stockProduct = await tx.stockProduct.findFirst({
-		where: {
-			productId,
-			deletedAt: null,
-			stock: {
-				storeId,
-				deletedAt: null
-			}
-		},
-		orderBy: { createdAt: 'asc' },
-		select: {
-			id: true,
-			stockId: true,
-			purchasePrice: true,
-			totalPrice: true
-		}
+	const store = await tx.store.findUnique({
+		where: { id: storeId },
+		select: { locationId: true }
 	});
-
-	if (!stockProduct) {
-		throw new AppError(400, 'Store stock restore failed', [
-			{ field: 'products', message: `No active stock bucket found to restore product ${productId} in store ${storeId}`, code: 'STORE_STOCK_RESTORE_FAILED' }
-		]);
+	if (!store || !store.locationId) {
+		throw new AppError(400, `Store ${storeId} is not associated with any location.`);
 	}
+	const locationId = store.locationId;
 
-	const priceDelta = Number((restoredQuantity * stockProduct.purchasePrice).toFixed(2));
-
-	await tx.stockProduct.update({
-		where: { id: stockProduct.id },
-		data: {
-			quantity: { increment: restoredQuantity },
-			totalPrice: Number((stockProduct.totalPrice + priceDelta).toFixed(2))
-		}
-	});
-
-	await tx.stock.update({
-		where: { id: stockProduct.stockId },
-		data: {
-			totalProductQuantity: { increment: restoredQuantity },
-			grandTotal: { increment: priceDelta }
-		}
+	// Perform atomic stock increment and ledger entry
+	await stockLedgerService.adjustStock(tx, {
+		productId,
+		locationId,
+		quantityChanged: restoredQuantity,
+		movementType: StockMovementType.CUSTOMER_RETURN,
+		referenceType: 'PosOrder',
+		referenceId: orderId,
+		performedBy: userId,
+		notes: `POS Sale Return/Cancellation for Order ${orderId}`
 	});
 };
 
@@ -762,6 +708,8 @@ const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: strin
 			invoiceNumber: true,
 			storeId: true,
 			baseAmount: true,
+			taxPercent: true,
+			taxAmount: true,
 			finalAmount: true,
 			paidAmount: true,
 			paymentStatus: true,
@@ -902,6 +850,8 @@ const loadPosOrderResponse = async (tx: Prisma.TransactionClient, orderId: strin
 			name: cashierUser?.admins[0]?.name ?? null
 		},
 		baseAmount: createdOrder.baseAmount,
+		taxPercent: createdOrder.taxPercent,
+		taxAmount: createdOrder.taxAmount,
 		finalAmount: createdOrder.finalAmount,
 		paidAmount: createdOrder.paidAmount,
 		totalPaid,
@@ -938,13 +888,23 @@ const createBill = async (userId: string, payload: CreatePosBillInput) => {
 	for (let attempt = 0; attempt < 3; attempt += 1) {
 		try {
 			const transactionResult = await prisma.$transaction(async (tx) => {
+				let locationId: string | undefined;
 				if (normalized.storeId) {
-					const store = await tx.store.findFirst({ where: { id: normalized.storeId, deletedAt: null } });
+					const store = await tx.store.findFirst({
+						where: { id: normalized.storeId, deletedAt: null },
+						select: { id: true, locationId: true }
+					});
 					if (!store) {
 						throw new AppError(404, 'Store not found', [
 							{ field: 'storeId', message: 'No active store found with this id', code: 'STORE_NOT_FOUND' }
 						]);
 					}
+					if (!store.locationId) {
+						throw new AppError(400, 'Store is not associated with any location', [
+							{ field: 'storeId', message: 'Store is not associated with any location', code: 'STORE_LOCATION_MISSING' }
+						]);
+					}
+					locationId = store.locationId;
 				}
 
 				await ensurePaymentBanksExist(tx, normalized.payments);
@@ -1072,8 +1032,7 @@ const createBill = async (userId: string, payload: CreatePosBillInput) => {
 					const hasActiveDiscount =
 						product.discountType != null &&
 						product.discountType !== DiscountType.NONE &&
-						product.discountValue != null &&
-						isDateWithinInclusiveRange(now, product.discountStartDate, product.discountEndDate);
+						product.discountValue != null;
 
 					const unitFinalPrice = hasActiveDiscount
 						? calculateDiscountedPrice(unitBasePrice, product.discountType as DiscountType, product.discountValue as number)
@@ -1106,20 +1065,18 @@ const createBill = async (userId: string, payload: CreatePosBillInput) => {
 						]);
 					}
 
-					if (normalized.storeId) {
-						const storeStockSummary = await tx.stockProduct.aggregate({
+					if (locationId) {
+						const stock = await tx.stock.findUnique({
 							where: {
-								productId,
-								deletedAt: null,
-								stock: {
-									storeId: normalized.storeId,
-									deletedAt: null
+								productId_locationId: {
+									productId,
+									locationId
 								}
 							},
-							_sum: { quantity: true }
+							select: { quantity: true }
 						});
 
-						const availableStoreQuantity = storeStockSummary._sum.quantity ?? 0;
+						const availableStoreQuantity = stock?.quantity ?? 0;
 						if (availableStoreQuantity < totalQuantity) {
 							throw new AppError(400, 'Not enough store stock', [
 								{ field: 'products', message: `Store does not have enough stock for product ${product.name}`, code: 'INSUFFICIENT_STORE_STOCK' }
@@ -1130,7 +1087,10 @@ const createBill = async (userId: string, payload: CreatePosBillInput) => {
 
 				const baseAmount = toRoundedMoney(processedLines.reduce((sum, line) => sum + line.lineBaseTotal, 0));
 				const subtotalAmount = toRoundedMoney(processedLines.reduce((sum, line) => sum + line.lineFinalTotal, 0));
-				const finalAmount = applyOrderDiscount(subtotalAmount, normalized.orderDiscount.discountType, normalized.orderDiscount.discountValue);
+				const discountedAmount = applyOrderDiscount(subtotalAmount, normalized.orderDiscount.discountType, normalized.orderDiscount.discountValue);
+				// tax is a percentage applied on the post-discount amount
+				const taxAmount = toRoundedMoney(discountedAmount * (normalized.taxPercent / 100));
+				const finalAmount = toRoundedMoney(discountedAmount + taxAmount);
 				const incomingPaymentTotal = sumPaymentAmounts(normalized.payments);
 
 				if (incomingPaymentTotal > finalAmount) {
@@ -1147,6 +1107,8 @@ const createBill = async (userId: string, payload: CreatePosBillInput) => {
 						storeId: normalized.storeId,
 						invoiceNumber,
 						baseAmount,
+						taxPercent: normalized.taxPercent,
+						taxAmount,
 						finalAmount,
 						paidAmount: 0,
 						orderDiscountType: normalized.orderDiscount.discountType,
@@ -1195,8 +1157,43 @@ const createBill = async (userId: string, payload: CreatePosBillInput) => {
 						]);
 					}
 
+					// Re-read updated stock and auto-resolve stockStatus
+					const updatedProduct = await tx.product.findUnique({
+						where: { id: productId },
+						select: { stock: true }
+					});
+					if (updatedProduct !== null) {
+						const resolvedStatus = await resolveStockStatus(tx, productId, updatedProduct.stock);
+						await tx.product.update({
+							where: { id: productId },
+							data: { stockStatus: resolvedStatus }
+						});
+					}
+
 					if (normalized.storeId) {
-						await decrementStoreStockProducts(tx, normalized.storeId, productId, totalQuantity);
+						await decrementStoreStockProducts(tx, normalized.storeId, productId, totalQuantity, order.id, userId);
+					} else {
+						// No store selected — deduct from any location that has enough stock
+						const stockRecord = await tx.stock.findFirst({
+							where: {
+								productId,
+								deletedAt: null,
+								quantity: { gte: totalQuantity }
+							},
+							orderBy: { quantity: 'desc' }
+						});
+						if (stockRecord) {
+							await stockLedgerService.adjustStock(tx, {
+								productId,
+								locationId: stockRecord.locationId,
+								quantityChanged: -totalQuantity,
+								movementType: StockMovementType.SALE,
+								referenceType: 'PosOrder',
+								referenceId: order.id,
+								performedBy: userId,
+								notes: `POS Sale Order ${order.id} (no store)`
+							});
+						}
 					}
 				}
 
@@ -1284,13 +1281,23 @@ const updateBill = async (orderId: string, userId: string, payload: UpdatePosBil
 			})
 		};
 
+		let locationId: string | undefined;
 		if (normalized.storeId) {
-			const store = await tx.store.findFirst({ where: { id: normalized.storeId, deletedAt: null } });
+			const store = await tx.store.findFirst({
+				where: { id: normalized.storeId, deletedAt: null },
+				select: { id: true, locationId: true }
+			});
 			if (!store) {
 				throw new AppError(404, 'Store not found', [
 					{ field: 'storeId', message: 'No active store found with this id', code: 'STORE_NOT_FOUND' }
 				]);
 			}
+			if (!store.locationId) {
+				throw new AppError(400, 'Store is not associated with any location', [
+					{ field: 'storeId', message: 'Store is not associated with any location', code: 'STORE_LOCATION_MISSING' }
+				]);
+			}
+			locationId = store.locationId;
 		}
 
 		await ensurePaymentBanksExist(tx, normalized.payments);
@@ -1309,8 +1316,44 @@ const updateBill = async (orderId: string, userId: string, payload: UpdatePosBil
 				data: { stock: { increment: quantity } }
 			});
 
+			// Auto-resolve stockStatus after restoring stock
+			const restoredProduct = await tx.product.findUnique({
+				where: { id: productId },
+				select: { stock: true }
+			});
+			if (restoredProduct !== null) {
+				const resolvedStatus = await resolveStockStatus(tx, productId, restoredProduct.stock);
+				await tx.product.update({
+					where: { id: productId },
+					data: { stockStatus: resolvedStatus }
+				});
+			}
+
 			if (existingOrder.storeId) {
-				await incrementStoreStockProducts(tx, existingOrder.storeId, productId, quantity);
+				await incrementStoreStockProducts(tx, existingOrder.storeId, productId, quantity, existingOrder.id, userId);
+			} else {
+				// Restore stock to the location that had the most recent sale movement
+				const saleMovement = await tx.stockMovement.findFirst({
+					where: {
+						productId,
+						referenceId: existingOrder.id,
+						movementType: StockMovementType.SALE
+					},
+					orderBy: { createdAt: 'desc' },
+					select: { locationId: true }
+				});
+				if (saleMovement) {
+					await stockLedgerService.adjustStock(tx, {
+						productId,
+						locationId: saleMovement.locationId,
+						quantityChanged: quantity,
+						movementType: StockMovementType.CUSTOMER_RETURN,
+						referenceType: 'PosOrder',
+						referenceId: existingOrder.id,
+						performedBy: userId,
+						notes: `POS Sale Return/Edit for Order ${existingOrder.id} (no store)`
+					});
+				}
 			}
 		}
 
@@ -1437,8 +1480,7 @@ const updateBill = async (orderId: string, userId: string, payload: UpdatePosBil
 			const hasActiveDiscount =
 				product.discountType != null &&
 				product.discountType !== DiscountType.NONE &&
-				product.discountValue != null &&
-				isDateWithinInclusiveRange(now, product.discountStartDate, product.discountEndDate);
+				product.discountValue != null;
 
 			const unitFinalPrice = hasActiveDiscount
 				? calculateDiscountedPrice(unitBasePrice, product.discountType as DiscountType, product.discountValue as number)
@@ -1472,20 +1514,18 @@ const updateBill = async (orderId: string, userId: string, payload: UpdatePosBil
 				]);
 			}
 
-			if (normalized.storeId) {
-				const storeStockSummary = await tx.stockProduct.aggregate({
+			if (locationId) {
+				const stock = await tx.stock.findUnique({
 					where: {
-						productId,
-						deletedAt: null,
-						stock: {
-							storeId: normalized.storeId,
-							deletedAt: null
+						productId_locationId: {
+							productId,
+							locationId
 						}
 					},
-					_sum: { quantity: true }
+					select: { quantity: true }
 				});
 
-				const availableStoreQuantity = storeStockSummary._sum.quantity ?? 0;
+				const availableStoreQuantity = stock?.quantity ?? 0;
 				if (availableStoreQuantity < totalQuantity) {
 					throw new AppError(400, 'Not enough store stock', [
 						{ field: 'products', message: `Store does not have enough stock for product ${product.name}`, code: 'INSUFFICIENT_STORE_STOCK' }
@@ -1548,14 +1588,52 @@ const updateBill = async (orderId: string, userId: string, payload: UpdatePosBil
 				]);
 			}
 
+			// Auto-resolve stockStatus after decrement
+			const updatedProduct = await tx.product.findUnique({
+				where: { id: productId },
+				select: { stock: true }
+			});
+			if (updatedProduct !== null) {
+				const resolvedStatus = await resolveStockStatus(tx, productId, updatedProduct.stock);
+				await tx.product.update({
+					where: { id: productId },
+					data: { stockStatus: resolvedStatus }
+				});
+			}
+
 			if (normalized.storeId) {
-				await decrementStoreStockProducts(tx, normalized.storeId, productId, totalQuantity);
+				await decrementStoreStockProducts(tx, normalized.storeId, productId, totalQuantity, existingOrder.id, userId);
+			} else {
+				// No store — deduct from any location with enough stock
+				const stockRecord = await tx.stock.findFirst({
+					where: {
+						productId,
+						deletedAt: null,
+						quantity: { gte: totalQuantity }
+					},
+					orderBy: { quantity: 'desc' }
+				});
+				if (stockRecord) {
+					await stockLedgerService.adjustStock(tx, {
+						productId,
+						locationId: stockRecord.locationId,
+						quantityChanged: -totalQuantity,
+						movementType: StockMovementType.SALE,
+						referenceType: 'PosOrder',
+						referenceId: existingOrder.id,
+						performedBy: userId,
+						notes: `POS Sale Order ${existingOrder.id} (no store)`
+					});
+				}
 			}
 		}
 
 		const baseAmount = toRoundedMoney(processedLines.reduce((sum, line) => sum + line.lineBaseTotal, 0));
 		const subtotalAmount = toRoundedMoney(processedLines.reduce((sum, line) => sum + line.lineFinalTotal, 0));
-		const finalAmount = applyOrderDiscount(subtotalAmount, normalized.orderDiscount.discountType, normalized.orderDiscount.discountValue);
+		const discountedAmount = applyOrderDiscount(subtotalAmount, normalized.orderDiscount.discountType, normalized.orderDiscount.discountValue);
+		// tax is a percentage applied on the post-discount amount
+		const taxAmount = toRoundedMoney(discountedAmount * (normalized.taxPercent / 100));
+		const finalAmount = toRoundedMoney(discountedAmount + taxAmount);
 
 		const paidAggregate = await tx.globalPayment.aggregate({
 			where: {
@@ -1587,6 +1665,8 @@ const updateBill = async (orderId: string, userId: string, payload: UpdatePosBil
 			data: {
 				storeId: normalized.storeId,
 				baseAmount,
+				taxPercent: normalized.taxPercent,
+				taxAmount,
 				finalAmount,
 				paidAmount: existingPaidAmount,
 				orderDiscountType: normalized.orderDiscount.discountType,
@@ -1807,8 +1887,44 @@ const deleteBill = async (orderId: string, userId: string) => {
 				data: { stock: { increment: quantity } }
 			});
 
+			// Auto-resolve stockStatus after restoring stock
+			const restoredProduct = await tx.product.findUnique({
+				where: { id: productId },
+				select: { stock: true }
+			});
+			if (restoredProduct !== null) {
+				const resolvedStatus = await resolveStockStatus(tx, productId, restoredProduct.stock);
+				await tx.product.update({
+					where: { id: productId },
+					data: { stockStatus: resolvedStatus }
+				});
+			}
+
 			if (existingOrder.storeId) {
-				await incrementStoreStockProducts(tx, existingOrder.storeId, productId, quantity);
+				await incrementStoreStockProducts(tx, existingOrder.storeId, productId, quantity, existingOrder.id, userId);
+			} else {
+				// Restore stock to whichever location the original sale deducted from
+				const saleMovement = await tx.stockMovement.findFirst({
+					where: {
+						productId,
+						referenceId: existingOrder.id,
+						movementType: StockMovementType.SALE
+					},
+					orderBy: { createdAt: 'desc' },
+					select: { locationId: true }
+				});
+				if (saleMovement) {
+					await stockLedgerService.adjustStock(tx, {
+						productId,
+						locationId: saleMovement.locationId,
+						quantityChanged: quantity,
+						movementType: StockMovementType.CUSTOMER_RETURN,
+						referenceType: 'PosOrder',
+						referenceId: existingOrder.id,
+						performedBy: userId,
+						notes: `POS Sale Cancellation for Order ${existingOrder.id} (no store)`
+					});
+				}
 			}
 		}
 

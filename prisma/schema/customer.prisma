@@ -12,7 +12,6 @@ model Customer {
     wishlists Wishlist[]
 
     addresses Address[]
-
     orders Order[]
 }
 

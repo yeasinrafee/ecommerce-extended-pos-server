@@ -40,5 +40,11 @@ router.patch(
   authorizeRoles(Role.CUSTOMER),
   asyncHandler(orderController.cancelOrder),
 );
+router.patch(
+  "/:id/complete",
+  authenticate,
+  authorizeRoles(Role.ADMIN, Role.SUPER_ADMIN),
+  asyncHandler(orderController.completeOrder),
+);
 
 export const orderRoutes = router;

@@ -7,8 +7,8 @@ model Store {
     updatedAt DateTime  @updatedAt
     deletedAt DateTime?
 
-    stocks             Stock[]
-    stockTransfersFrom StockTransfer[] @relation("StockTransferFrom")
-    stockTransfersTo   StockTransfer[] @relation("StockTransferTo")
+    locationId String?   @unique
+    location   Location? @relation(fields: [locationId], references: [id], onDelete: SetNull)
+
     posOrders          PosOrder[]
 }

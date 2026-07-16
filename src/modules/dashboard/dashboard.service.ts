@@ -1,6 +1,12 @@
 import { prisma } from '../../config/prisma.js';
+import { OrderStatus } from '@prisma/client';
 
-export const getDashboardAnalyticsService = async (query: { month?: string; year?: string; startDate?: string; endDate?: string; }) => {
+function buildDateRange(query: {
+  month?: string;
+  year?: string;
+  startDate?: string;
+  endDate?: string;
+}) {
   let startDate: Date;
   let endDate: Date;
 
@@ -9,156 +15,230 @@ export const getDashboardAnalyticsService = async (query: { month?: string; year
     endDate = new Date(query.endDate);
     endDate.setHours(23, 59, 59, 999);
   } else if (query.month && query.year) {
-    const year = parseInt(query.year);
-    const month = parseInt(query.month) - 1; // 0-indexed
-    startDate = new Date(year, month, 1);
-    endDate = new Date(year, month + 1, 0, 23, 59, 59, 999);
+    const y = parseInt(query.year);
+    const m = parseInt(query.month) - 1;
+    startDate = new Date(y, m, 1);
+    endDate = new Date(y, m + 1, 0, 23, 59, 59, 999);
   } else if (query.year) {
-    const year = parseInt(query.year);
-    startDate = new Date(year, 0, 1);
-    endDate = new Date(year, 11, 31, 23, 59, 59, 999);
+    const y = parseInt(query.year);
+    startDate = new Date(y, 0, 1);
+    endDate = new Date(y, 11, 31, 23, 59, 59, 999);
   } else {
-    const year = new Date().getFullYear();
-    const month = new Date().getMonth();
-    startDate = new Date(year, month, 1);
-    endDate = new Date(year, month + 1, 0, 23, 59, 59, 999);
+    const now = new Date();
+    startDate = new Date(now.getFullYear(), now.getMonth(), 1);
+    endDate = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
   }
 
-  const orders = await prisma.order.findMany({
-    where: {
-      createdAt: {
-        gte: startDate,
-        lte: endDate
-      }
-    },
-    select: {
-      id: true,
-      finalAmount: true,
-      orderStatus: true,
-      createdAt: true,
-      orderItems: {
-        select: {
-          product: {
-            select: {
-              brand: { select: { id: true, name: true } },
-              categories: { select: { category: { select: { id: true, name: true } } } }
-            }
-          }
-        }
-      }
-    }
-  });
+  return { startDate, endDate };
+}
 
-  let totalRevenue = 0, totalOrders = 0;
-  let pendingOrdersCount = 0, pendingOrdersRevenue = 0;
-  let confirmedOrdersCount = 0, confirmedOrdersRevenue = 0;
-  let deliveredOrdersCount = 0, deliveredOrdersRevenue = 0;
+const COLORS = ['#3b82f6', '#8b5cf6', '#ec4899', '#f59e0b', '#10b981', '#f97316', '#0ea5e9', '#6366f1'];
 
-  for (const order of orders) {
-    if (order.orderStatus !== 'CANCELLED') {
-      totalRevenue += order.finalAmount;
-      totalOrders += 1;
-    }
-    
-    if (order.orderStatus === 'PENDING') {
-      pendingOrdersCount += 1;
-      pendingOrdersRevenue += order.finalAmount;
-    } else if (order.orderStatus === 'CONFIRMED') {
-      confirmedOrdersCount += 1;
-      confirmedOrdersRevenue += order.finalAmount;
-    } else if (order.orderStatus === 'DELIVERED') {
-      deliveredOrdersCount += 1;
-      deliveredOrdersRevenue += order.finalAmount;
-    }
-  }
-
+export const getDashboardAnalyticsService = async (query: {
+  month?: string;
+  year?: string;
+  startDate?: string;
+  endDate?: string;
+}) => {
+  const { startDate, endDate } = buildDateRange(query);
+  const dateFilter = { gte: startDate, lte: endDate };
   const durationDays = (endDate.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24);
   const isDaily = durationDays <= 31;
 
-  const areaChartMap = new Map<string, { revenue: number; orders: number }>();
-  
+  const [webOrders, posOrders, stockRows, lowStockConfigs, topPosItems] = await Promise.all([
+    // Web orders — only what's needed
+    prisma.order.findMany({
+      where: { createdAt: dateFilter },
+      select: {
+        finalAmount: true,
+        orderStatus: true,
+        createdAt: true,
+        orderItems: {
+          select: {
+            quantity: true,
+            product: { select: { categories: { select: { category: { select: { name: true } } } } } },
+          },
+        },
+      },
+    }),
+
+    // POS orders
+    prisma.posOrder.findMany({
+      where: { createdAt: dateFilter, deletedAt: null },
+      select: {
+        finalAmount: true,
+        paidAmount: true,
+        createdAt: true,
+        posOrderItems: {
+          select: {
+            quantity: true,
+            finalPrice: true,
+            product: {
+              select: {
+                id: true,
+                name: true,
+                categories: { select: { category: { select: { name: true } } } },
+              },
+            },
+          },
+        },
+      },
+    }),
+
+    // Current stock (not date-filtered — always latest)
+    prisma.stock.aggregate({ where: { deletedAt: null }, _sum: { quantity: true } }),
+
+    // Low stock alerts
+    prisma.lowStockConfig.findMany({
+      where: { deletedAt: null },
+      select: {
+        minimumQuantity: true,
+        product: {
+          select: {
+            id: true,
+            name: true,
+            stocks: { where: { deletedAt: null }, select: { quantity: true } },
+          },
+        },
+      },
+    }),
+
+    // Top selling products by POS (groupBy in memory — avoid extra query)
+    Promise.resolve(null),
+  ]);
+
+  // ── Summary cards ───────────────────────────────────────────────────────
+
+  const activeWebOrders = webOrders.filter(o => o.orderStatus !== OrderStatus.RETURNED);
+  const webRevenue = activeWebOrders.reduce((s, o) => s + o.finalAmount, 0);
+
+  const posRevenue = posOrders.reduce((s, o) => s + o.finalAmount, 0);
+  const posDue = posOrders.reduce((s, o) => s + Math.max(0, o.finalAmount - o.paidAmount), 0);
+
+  const totalRevenue = webRevenue + posRevenue;
+  const totalOrders = activeWebOrders.length + posOrders.length;
+
+  const totalStock = stockRows._sum.quantity ?? 0;
+
+  const lowStockAlerts = lowStockConfigs
+    .map(cfg => {
+      const currentQty = cfg.product.stocks.reduce((s, st) => s + st.quantity, 0);
+      return { productId: cfg.product.id, name: cfg.product.name, currentQty, minQty: cfg.minimumQuantity };
+    })
+    .filter(a => a.currentQty <= a.minQty)
+    .sort((a, b) => a.currentQty - b.currentQty)
+    .slice(0, 10);
+
+  // ── Timeline chart (line/bar) ────────────────────────────────────────────
+
+  type Slot = { posRevenue: number; webRevenue: number; orders: number };
+  const timeline = new Map<string, Slot>();
+
+  function getLabel(date: Date): string {
+    if (isDaily) return `${date.getDate()} ${date.toLocaleString('default', { month: 'short' })}`;
+    return date.toLocaleString('default', { month: 'short', year: durationDays > 365 ? '2-digit' : undefined });
+  }
+
+  // Pre-fill skeleton so chart has no gaps
   if (isDaily) {
     for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
-      const label = `${d.getDate()} ${d.toLocaleString('default', { month: 'short' })}`;
-      areaChartMap.set(label, { revenue: 0, orders: 0 });
+      timeline.set(getLabel(new Date(d)), { posRevenue: 0, webRevenue: 0, orders: 0 });
     }
   } else {
-    let tempDate = new Date(startDate);
-    while (tempDate <= endDate) {
-      const label = tempDate.toLocaleString('default', { month: 'short', year: durationDays > 365 ? '2-digit' : undefined });
-      areaChartMap.set(label, { revenue: 0, orders: 0 });
-      tempDate.setMonth(tempDate.getMonth() + 1);
+    let t = new Date(startDate.getFullYear(), startDate.getMonth(), 1);
+    const last = new Date(endDate.getFullYear(), endDate.getMonth(), 1);
+    while (t <= last) {
+      timeline.set(getLabel(t), { posRevenue: 0, webRevenue: 0, orders: 0 });
+      t.setMonth(t.getMonth() + 1);
     }
   }
 
-  const categoryMap = new Map<string, number>();
-  const brandMap = new Map<string, number>();
+  for (const o of activeWebOrders) {
+    const slot = timeline.get(getLabel(o.createdAt));
+    if (slot) { slot.webRevenue += o.finalAmount; slot.orders += 1; }
+  }
+  for (const o of posOrders) {
+    const slot = timeline.get(getLabel(o.createdAt));
+    if (slot) { slot.posRevenue += o.finalAmount; slot.orders += 1; }
+  }
 
-  for (const order of orders) {
-    if (order.orderStatus === 'CANCELLED') continue;
+  const timelineChart = Array.from(timeline.entries()).map(([name, d]) => ({
+    name,
+    posRevenue: +d.posRevenue.toFixed(2),
+    webRevenue: +d.webRevenue.toFixed(2),
+    totalRevenue: +(d.posRevenue + d.webRevenue).toFixed(2),
+    orders: d.orders,
+  }));
 
-    const d = order.createdAt;
-    let label = '';
-    if (isDaily) {
-      label = `${d.getDate()} ${d.toLocaleString('default', { month: 'short' })}`;
-    } else {
-       label = d.toLocaleString('default', { month: 'short', year: durationDays > 365 ? '2-digit' : undefined });
-    }
-    
-    if (areaChartMap.has(label)) {
-      const current = areaChartMap.get(label)!;
-      current.revenue += order.finalAmount;
-      current.orders += 1;
-    }
+  // ── Category pie (POS only) ───────────────────────────────────────────────
 
-    for (const item of order.orderItems) {
-      const brandName = item.product.brand?.name || 'Unbranded';
-      brandMap.set(brandName, (brandMap.get(brandName) || 0) + 1);
+  const catMap = new Map<string, number>();
 
-      if (item.product.categories && item.product.categories.length > 0) {
-        for (const cat of item.product.categories) {
-          const catName = cat.category.name;
-          categoryMap.set(catName, (categoryMap.get(catName) || 0) + 1);
-        }
+  // POS only (web reserved for future)
+  for (const o of posOrders)
+    for (const item of o.posOrderItems)
+      for (const c of item.product.categories)
+        catMap.set(c.category.name, (catMap.get(c.category.name) ?? 0) + item.quantity);
+
+  const categoryPie = Array.from(catMap.entries())
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([name, value], i) => ({ name, value, fill: COLORS[i % COLORS.length] }));
+
+  // ── Top selling products (POS) ────────────────────────────────────────────
+
+  const productSalesMap = new Map<string, { name: string; qty: number; revenue: number }>();
+  for (const o of posOrders) {
+    for (const item of o.posOrderItems) {
+      const pid = item.product.id;
+      const existing = productSalesMap.get(pid);
+      if (existing) {
+        existing.qty += item.quantity;
+        existing.revenue += item.finalPrice;
       } else {
-        categoryMap.set('Uncategorized', (categoryMap.get('Uncategorized') || 0) + 1);
+        productSalesMap.set(pid, {
+          name: item.product.name,
+          qty: item.quantity,
+          revenue: item.finalPrice,
+        });
       }
     }
   }
 
-  const areaChartData = Array.from(areaChartMap.entries()).map(([name, data]) => ({
-    name,
-    revenue: parseFloat(data.revenue.toFixed(2)),
-    orders: data.orders
-  }));
+  const topSellingProducts = Array.from(productSalesMap.entries())
+    .sort((a, b) => b[1].qty - a[1].qty)
+    .slice(0, 5)
+    .map(([productId, d], i) => ({
+      rank: i + 1,
+      productId,
+      name: d.name,
+      qtySold: d.qty,
+      revenue: +d.revenue.toFixed(2),
+    }));
 
-  const colors = ["#3b82f6", "#8b5cf6", "#ec4899", "#f43f5e", "#f59e0b", "#10b981", "#0ea5e9", "#6366f1", "#d946ef", "#f97316"];
-  
-  const formattedCategoryData = Array.from(categoryMap.entries()).sort((a,b)=>b[1]-a[1]).map(([name, value], i) => ({
-    name,
-    value,
-    fill: colors[i % colors.length]
-  })).slice(0, 10);
+  const totalProductsSold = productSalesMap.size; // unique products sold in period
 
-  const formattedBrandData = Array.from(brandMap.entries()).sort((a,b)=>b[1]-a[1]).map(([name, value], i) => ({
-    name,
-    value,
-    fill: colors[(i + 5) % colors.length]
-  })).slice(0, 10);
+  // ────────────────────────────────────────────────────────────────────────
 
   return {
+    dateRange: { startDate: startDate.toISOString(), endDate: endDate.toISOString() },
+
     cards: {
-      totalRevenue,
+      totalRevenue:      +totalRevenue.toFixed(2),
+      posRevenue:        +posRevenue.toFixed(2),
+      // webRevenue:       +webRevenue.toFixed(2),   // reserved for future
+      posDue:            +posDue.toFixed(2),
       totalOrders,
-      pendingOrdersCount,
-      pendingOrdersRevenue,
-      confirmedOrdersCount,
-      confirmedOrdersRevenue,
-      deliveredOrdersCount,
-      deliveredOrdersRevenue,
+      posOrders:         posOrders.length,
+      // webOrders:        activeWebOrders.length,   // reserved for future
+      totalProductsSold, // unique products sold (POS)
+      totalStock,
+      lowStockCount:     lowStockAlerts.length,
     },
-    areaChartData,
-    categoryData: formattedCategoryData,
-    brandData: formattedBrandData
+
+    timelineChart,        // bar chart (POS only for now)
+    categoryPie,          // top 5 categories pie
+    topSellingProducts,   // top 5 products table
+    lowStockAlerts,       // low stock list
   };
 };

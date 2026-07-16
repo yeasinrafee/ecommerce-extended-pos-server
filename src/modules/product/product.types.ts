@@ -24,6 +24,7 @@ export type CreateProductSeoDto = {
 
 export type CreateProductDto = {
 	name: string;
+	barcodeId?: string | null;
 	shortDescription?: string | null;
 	description: string;
 	basePrice: number;
@@ -32,17 +33,16 @@ export type CreateProductDto = {
 	discountValue?: number | null;
 	discountStartDate?: Date | null;
 	discountEndDate?: Date | null;
-	stock: number;
 	sku?: string | null;
 	weight?: number | null;
 	length?: number | null;
 	width?: number | null;
 	height?: number | null;
 	brandId?: string;
-	image: string;
+	image: string | null;
 	galleryImages: string[];
 	status: Status;
-	stockStatus: StockStatus;
+	// stockStatus is intentionally omitted — always forced to OUT_OF_STOCK by service on create
 	categoryIds: string[];
 	tagIds?: string[];
 	attributes: CreateProductAttributeDto[];
@@ -73,17 +73,16 @@ export type UpdateProductDto = {
 	discountValue?: number | null;
 	discountStartDate?: Date | null;
 	discountEndDate?: Date | null;
-	stock: number;
 	sku?: string | null;
 	weight?: number | null;
 	length?: number | null;
 	width?: number | null;
 	height?: number | null;
 	brandId?: string;
-	image: string;
+	image: string | null;
 	galleryImages: string[];
 	status: Status;
-	stockStatus: StockStatus;
+	// stockStatus is intentionally omitted — managed by GRN/inventory only
 	categoryIds: string[];
 	tagIds?: string[];
 	attributes: UpdateProductAttributeDto[];
@@ -93,19 +92,20 @@ export type UpdateProductDto = {
 
 export type PatchProductDto = {
 	status?: Status;
-	stockStatus?: StockStatus;
+	// stockStatus is NOT patchable — it is computed automatically from stock quantity
 };
 
 export type BulkPatchProductDto = {
 	ids: string[];
 	status?: Status;
-	stockStatus?: StockStatus;
+	// stockStatus is NOT bulk-patchable — it is computed automatically from stock quantity
 };
 
 export type ProductListQuery = {
 	page?: number;
 	limit?: number;
 	searchTerm?: string;
+	barcodeId?: string;
 	category?: string | string[];
 	brand?: string | string[];
 	minPrice?: number;

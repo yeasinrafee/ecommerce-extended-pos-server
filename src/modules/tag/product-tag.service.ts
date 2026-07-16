@@ -12,15 +12,26 @@ const getTags = async ({ page = 1, limit = 10, searchTerm }: TagListQuery = {}):
         ? { name: { contains: searchTerm, mode: 'insensitive' } }
         : {};
 
-    const [data, total] = await Promise.all([
+    const [tags, total] = await Promise.all([
         prisma.productTag.findMany({
             where,
             skip,
             take: limit,
-            orderBy: { createdAt: 'desc' }
+            orderBy: { createdAt: 'desc' },
+            include: {
+                _count: {
+                    select: { tagsOnProducts: { where: { product: { deletedAt: null } } } }
+                }
+            }
         }),
         prisma.productTag.count({ where })
     ]);
+
+    const data = tags.map((t) => ({
+        ...t,
+        productCount: t._count.tagsOnProducts,
+        _count: undefined
+    }));
 
     return {
         data,
@@ -80,6 +91,29 @@ const updateTag = async (id: string, payload: UpdateTagDto) => {
 };
 
 const deleteTag = async (id: string) => {
+    const existing = await prisma.productTag.findUnique({ where: { id } });
+    if (!existing) {
+        throw new AppError(404, 'Tag not found', [{ message: 'No tag exists with the provided id', code: 'NOT_FOUND' }]);
+    }
+
+    // Block delete if any active products use this tag
+    const linkedProducts = await prisma.tagsOnProducts.findMany({
+        where: { tagId: id },
+        include: { product: { select: { id: true, name: true, deletedAt: true } } },
+        take: 5
+    });
+
+    const activeLinked = linkedProducts.filter((lp) => !lp.product.deletedAt);
+    if (activeLinked.length > 0) {
+        const names = activeLinked.map((lp) => `"${lp.product.name}"`).join(', ');
+        throw new AppError(409, 'Cannot delete — tag is linked to products', [
+            {
+                message: `This tag is used by: ${names}. Remove the tag from those products first.`,
+                code: 'TAG_HAS_PRODUCTS'
+            }
+        ]);
+    }
+
     await prisma.productTag.delete({ where: { id } });
     return true;
 };

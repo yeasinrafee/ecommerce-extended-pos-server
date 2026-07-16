@@ -6,13 +6,13 @@ import { stockTransferController } from './stock-transfer.controller.js';
 
 const router = Router();
 
-router.get('/get-all-paginated', asyncHandler(stockTransferController.getTransfers));
-router.get('/get/:id', asyncHandler(stockTransferController.getTransfer));
-router.get('/search-products', asyncHandler(stockTransferController.searchProducts));
-router.get('/generate-invoice-number', authenticate, authorizeRoles(Role.ADMIN, Role.SUPER_ADMIN), asyncHandler(stockTransferController.generateInvoiceNumber));
+router.get('/get-all-paginated', authenticate, authorizeRoles(Role.ADMIN, Role.SUPER_ADMIN), asyncHandler(stockTransferController.getTransfers));
+router.get('/get/:id', authenticate, authorizeRoles(Role.ADMIN, Role.SUPER_ADMIN), asyncHandler(stockTransferController.getTransfer));
+
 router.post('/create', authenticate, authorizeRoles(Role.ADMIN, Role.SUPER_ADMIN), asyncHandler(stockTransferController.createTransfer));
-router.patch('/bulk/fields', authenticate, authorizeRoles(Role.ADMIN, Role.SUPER_ADMIN), asyncHandler(stockTransferController.bulkPatchTransfers));
-router.patch('/:id/fields', authenticate, authorizeRoles(Role.ADMIN, Role.SUPER_ADMIN), asyncHandler(stockTransferController.patchTransfer));
-router.delete('/delete/:id', authenticate, authorizeRoles(Role.ADMIN, Role.SUPER_ADMIN), asyncHandler(stockTransferController.deleteTransfer));
+router.patch('/update/:id', authenticate, authorizeRoles(Role.ADMIN, Role.SUPER_ADMIN), asyncHandler(stockTransferController.updateTransfer));
+router.patch('/ship/:id', authenticate, authorizeRoles(Role.ADMIN, Role.SUPER_ADMIN), asyncHandler(stockTransferController.shipTransfer));
+router.patch('/receive/:id', authenticate, authorizeRoles(Role.ADMIN, Role.SUPER_ADMIN), asyncHandler(stockTransferController.receiveTransfer));
+router.patch('/cancel/:id', authenticate, authorizeRoles(Role.ADMIN, Role.SUPER_ADMIN), asyncHandler(stockTransferController.cancelTransfer));
 
 export const stockTransferRoutes = router;
