@@ -3,7 +3,7 @@ import { PaymentStatus } from '@prisma/client';
 import { AppError } from '../../common/errors/app-error.js';
 import { sendResponse } from '../../common/utils/send-response.js';
 import { posService } from './pos.service.js';
-import type { CreatePosBillInput, UpdatePosBillInput } from './pos.types.js';
+import type { CreatePosBillInput, PosReportQuery, UpdatePosBillInput } from './pos.types.js';
 
 const getBills = async (req: Request, res: Response) => {
 	const page = Math.max(1, Number(req.query.page ?? 1));
@@ -199,6 +199,27 @@ const deleteBill = async (req: Request, res: Response) => {
 	});
 };
 
+const getReport = async (req: Request, res: Response) => {
+	const query: PosReportQuery = {
+		startDate: typeof req.query.startDate === 'string' ? req.query.startDate.trim() : undefined,
+		endDate: typeof req.query.endDate === 'string' ? req.query.endDate.trim() : undefined,
+		month: typeof req.query.month === 'string' ? req.query.month.trim() : undefined,
+		year: typeof req.query.year === 'string' ? req.query.year.trim() : undefined,
+		storeId: typeof req.query.storeId === 'string' ? req.query.storeId.trim() : undefined,
+		paymentStatus: typeof req.query.paymentStatus === 'string' ? req.query.paymentStatus.trim().toUpperCase() : undefined,
+	};
+
+	const data = await posService.getReport(query);
+
+	sendResponse({
+		res,
+		statusCode: 200,
+		success: true,
+		message: 'POS report fetched',
+		data
+	});
+};
+
 export const posController = {
 	getBills,
 	getBill,
@@ -207,5 +228,6 @@ export const posController = {
 	updateBill,
 	addBillPayments,
 	deleteBillPayment,
-	deleteBill
+	deleteBill,
+	getReport,
 };

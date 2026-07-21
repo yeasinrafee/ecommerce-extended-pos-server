@@ -2,63 +2,74 @@ import type { DiscountType, PaymentMethod } from '@prisma/client';
 import type { PaymentStatus } from '@prisma/client';
 
 export type PosProductsQuery = {
-	storeId?: string;
-	searchTerm?: string;
+  storeId?: string;
+  searchTerm?: string;
 };
 
 export type PosBillsListQuery = {
-	page?: number;
-	limit?: number;
-	paymentStatus?: PaymentStatus;
-	searchTerm?: string;
+  page?: number;
+  limit?: number;
+  paymentStatus?: PaymentStatus;
+  searchTerm?: string;
 };
 
 export type PosVariationLineInput = {
-	variationId?: string;
-	quantity?: number;
+  variationId?: string;
+  quantity?: number;
 };
 
 export type PosProductLineInput = {
-	productId?: string;
-	quantity?: number;
-	variationId?: string;
-	variationIds?: string[];
-	variationQuantities?: number[];
-	variations?: PosVariationLineInput[];
+  productId?: string;
+  quantity?: number;
+  variationId?: string;
+  variationIds?: string[];
+  variationQuantities?: number[];
+  variations?: PosVariationLineInput[];
 };
 
 export type PosPaymentLineInput = {
-	amount?: number;
-	paymentMethod?: PaymentMethod;
-	bankId?: string;
+  amount?: number;
+  paymentMethod?: PaymentMethod;
+  bankId?: string;
 };
 
 export type CreatePosBillInput = {
-	storeId?: string;
-	discountType?: DiscountType;
-	discountValue?: number;
-	tax?: number | null;
-	payments?: PosPaymentLineInput[];
-	productId?: string;
-	quantity?: number;
-	productIds?: string[];
-	quantities?: number[];
-	variationId?: string;
-	variationIds?: string[];
-	variationQuantities?: number[];
-	products?: PosProductLineInput[];
+  storeId?: string;
+  customerName?: string;
+  customerPhone?: string;
+  discountType?: DiscountType;
+  discountValue?: number;
+  tax?: number | null;
+  payments?: PosPaymentLineInput[];
+  productId?: string;
+  quantity?: number;
+  productIds?: string[];
+  quantities?: number[];
+  variationId?: string;
+  variationIds?: string[];
+  variationQuantities?: number[];
+  products?: PosProductLineInput[];
 };
 
 export type UpdatePosBillInput = CreatePosBillInput;
 
 export type NormalizedPosBillLine = {
-	productId: string;
-	quantity: number;
-	variationIds: string[];
+  productId: string;
+  quantity: number;
+  variationIds: string[];
 };
 
 export type NormalizedPosPaymentLine = {
-	amount: number;
-	paymentMethod: PaymentMethod;
-	bankId: string | null;
+  amount: number;
+  paymentMethod: PaymentMethod;
+  bankId: string | null;
+};
+
+export type PosReportQuery = {
+  startDate?: string;
+  endDate?: string;
+  month?: string;
+  year?: string;
+  storeId?: string;
+  paymentStatus?: string;
 };
