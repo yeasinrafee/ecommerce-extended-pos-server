@@ -13,5 +13,6 @@ router.patch('/bill/:orderId/update', authenticate, asyncHandler(posController.u
 router.post('/bill/:orderId/payments/add', authenticate, asyncHandler(posController.addBillPayments));
 router.delete('/bill/:orderId/payments/:paymentId/delete', authenticate, asyncHandler(posController.deleteBillPayment));
 router.delete('/bill/:orderId/delete', authenticate, asyncHandler(posController.deleteBill));
+router.get('/report', authenticate, asyncHandler(posController.getReport));
 
 export const posRoutes = router;
