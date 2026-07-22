@@ -2637,7 +2637,12 @@ const getReport = async (query: PosReportQuery) => {
         },
         globalPayments: {
           where: { deletedAt: null },
-          select: { amount: true, paymentMethod: true },
+          select: {
+            amount: true,
+            paymentMethod: true,
+            bankId: true,
+            bank: { select: { bankName: true } },
+          },
         },
         store: { select: { id: true, name: true } },
         user: {
@@ -2713,9 +2718,23 @@ const getReport = async (query: PosReportQuery) => {
   const bdtDate = (d: Date) => new Date(d.getTime() + BD_OFFSET);
   const getLabel = (date: Date) => {
     const b = bdtDate(date);
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
     if (isDaily)
-      return `${b.getUTCDate()} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][b.getUTCMonth()]}`;
-    return `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][b.getUTCMonth()]}${durationDays > 365 ? " '" + String(b.getUTCFullYear()).slice(2) : ''}`;
+      return `${b.getUTCDate()} ${months[b.getUTCMonth()]} ${b.getUTCFullYear()}`;
+    return `${months[b.getUTCMonth()]} ${b.getUTCFullYear()}`;
   };
 
   if (isDaily) {
@@ -2745,7 +2764,7 @@ const getReport = async (query: PosReportQuery) => {
     const ey = bdEnd.getUTCFullYear(),
       em = bdEnd.getUTCMonth();
     while (y < ey || (y === ey && m <= em)) {
-      const lbl = `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m]}${durationDays > 365 ? " '" + String(y).slice(2) : ''}`;
+      const lbl = `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m]} ${y}`;
       timeline.set(lbl, { revenue: 0, orders: 0 });
       m++;
       if (m > 11) {
@@ -2879,6 +2898,11 @@ const getReport = async (query: PosReportQuery) => {
           paymentStatus: o.paymentStatus,
           storeName: o.store?.name || 'N/A',
           createdAt: o.createdAt,
+          payments: o.globalPayments.map((p) => ({
+            method: p.paymentMethod,
+            amount: p.amount,
+            bankName: p.bank?.bankName || null,
+          })),
           items: o.posOrderItems.map((item) => ({
             productName: item.product?.name || 'Deleted Product',
             barcode: item.product?.barcodeId || '-',
