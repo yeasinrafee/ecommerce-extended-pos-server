@@ -35,6 +35,7 @@ export type PosPaymentLineInput = {
 
 export type CreatePosBillInput = {
   storeId?: string;
+  posCustomerId?: string;
   customerName?: string;
   customerPhone?: string;
   discountType?: DiscountType;

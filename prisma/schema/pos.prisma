@@ -17,6 +17,8 @@ model PosOrder {
     paymentStatus      PaymentStatus   @default(PENDING)
     customerName       String?
     customerPhone      String?
+    posCustomerId      String?
+    posCustomer        PosCustomer?    @relation(fields: [posCustomerId], references: [id])
     store              Store?          @relation(fields: [storeId], references: [id])
     posOrderItems      PosOrderItem[]
     globalPayments     GlobalPayment[]

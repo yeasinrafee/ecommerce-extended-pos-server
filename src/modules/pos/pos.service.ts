@@ -10,6 +10,7 @@ import {
 import { AppError } from '../../common/errors/app-error.js';
 import { prisma } from '../../config/prisma.js';
 import { posPaymentService } from '../pos-payment/pos-payment.service.js';
+import { posCustomerService } from '../pos-customer/pos-customer.service.js';
 import {
   stockLedgerService,
   resolveStockStatus,
@@ -721,6 +722,7 @@ const normalizeCreatePosBillPayload = (payload: CreatePosBillInput) => {
   }
 
   const storeId = toTrimmedString(payload.storeId) || null;
+  const posCustomerId = toTrimmedString(payload.posCustomerId) || null;
   const customerName = toTrimmedString(payload.customerName) || null;
   const customerPhone = toTrimmedString(payload.customerPhone) || null;
   const orderDiscount = normalizeOrderDiscountInput(
@@ -841,6 +843,7 @@ const normalizeCreatePosBillPayload = (payload: CreatePosBillInput) => {
 
   return {
     storeId,
+    posCustomerId,
     customerName,
     customerPhone,
     lines: Array.from(grouped.values()),
@@ -964,6 +967,7 @@ const loadPosOrderResponse = async (
       paymentStatus: true,
       customerName: true,
       customerPhone: true,
+      posCustomerId: true,
       orderDiscountType: true,
       orderDiscountValue: true,
       createdAt: true,
@@ -1102,6 +1106,13 @@ const loadPosOrderResponse = async (
     paymentStatus: createdOrder.paymentStatus,
     customerName: createdOrder.customerName,
     customerPhone: createdOrder.customerPhone,
+    posCustomerId: createdOrder.posCustomerId,
+    posCustomer: createdOrder.posCustomerId
+      ? await tx.posCustomer.findUnique({
+          where: { id: createdOrder.posCustomerId },
+          select: { id: true, name: true, phone: true },
+        })
+      : null,
     orderDiscountType: createdOrder.orderDiscountType,
     orderDiscountValue: createdOrder.orderDiscountValue,
     cashier: {
@@ -1180,6 +1191,42 @@ const createBill = async (userId: string, payload: CreatePosBillInput) => {
         }
 
         await ensurePaymentBanksExist(tx, normalized.payments);
+
+        // Resolve posCustomerId — find or create by phone, or verify provided id
+        let resolvedPosCustomerId: string | null =
+          normalized.posCustomerId ?? null;
+        let resolvedCustomerName: string | null = normalized.customerName;
+        let resolvedCustomerPhone: string | null = normalized.customerPhone;
+
+        if (!resolvedPosCustomerId && normalized.customerPhone) {
+          // Try to find or create pos customer by phone
+          const posCustomer = await posCustomerService.findOrCreateByPhone(
+            tx,
+            normalized.customerPhone,
+            normalized.customerName || undefined,
+          );
+          if (posCustomer) {
+            resolvedPosCustomerId = posCustomer.id;
+            resolvedCustomerName = normalized.customerName || posCustomer.name;
+            resolvedCustomerPhone = posCustomer.phone;
+          }
+        } else if (resolvedPosCustomerId) {
+          // Verify the provided posCustomerId exists
+          const posCustomer = await tx.posCustomer.findFirst({
+            where: { id: resolvedPosCustomerId, isDeleted: false },
+          });
+          if (!posCustomer) {
+            throw new AppError(404, 'POS customer not found', [
+              {
+                field: 'posCustomerId',
+                message: 'No active POS customer found with this id',
+                code: 'POS_CUSTOMER_NOT_FOUND',
+              },
+            ]);
+          }
+          resolvedCustomerName = normalized.customerName || posCustomer.name;
+          resolvedCustomerPhone = posCustomer.phone;
+        }
 
         const uniqueProductIds = Array.from(
           new Set(normalized.lines.map((line) => line.productId)),
@@ -1456,8 +1503,9 @@ const createBill = async (userId: string, payload: CreatePosBillInput) => {
             userId,
             storeId: normalized.storeId,
             invoiceNumber,
-            customerName: normalized.customerName || 'Walk in Customer',
-            customerPhone: normalized.customerPhone || '',
+            customerName: resolvedCustomerName || 'Walk in Customer',
+            customerPhone: resolvedCustomerPhone || '',
+            posCustomerId: resolvedPosCustomerId,
             baseAmount,
             taxPercent: normalized.taxPercent,
             taxAmount,
@@ -1468,6 +1516,18 @@ const createBill = async (userId: string, payload: CreatePosBillInput) => {
             paymentStatus: resolvePaymentStatusFromAmounts(finalAmount, 0),
           },
         });
+
+        // If we have a posCustomer, append the order id to their posOrderIds
+        if (resolvedPosCustomerId) {
+          await tx.posCustomer.update({
+            where: { id: resolvedPosCustomerId },
+            data: {
+              posOrderIds: {
+                push: order.id,
+              },
+            },
+          });
+        }
 
         for (const line of processedLines) {
           const createdItem = await tx.posOrderItem.create({
@@ -2637,7 +2697,12 @@ const getReport = async (query: PosReportQuery) => {
         },
         globalPayments: {
           where: { deletedAt: null },
-          select: { amount: true, paymentMethod: true },
+          select: {
+            amount: true,
+            paymentMethod: true,
+            bankId: true,
+            bank: { select: { bankName: true } },
+          },
         },
         store: { select: { id: true, name: true } },
         user: {
@@ -2713,9 +2778,23 @@ const getReport = async (query: PosReportQuery) => {
   const bdtDate = (d: Date) => new Date(d.getTime() + BD_OFFSET);
   const getLabel = (date: Date) => {
     const b = bdtDate(date);
+    const months = [
+      'Jan',
+      'Feb',
+      'Mar',
+      'Apr',
+      'May',
+      'Jun',
+      'Jul',
+      'Aug',
+      'Sep',
+      'Oct',
+      'Nov',
+      'Dec',
+    ];
     if (isDaily)
-      return `${b.getUTCDate()} ${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][b.getUTCMonth()]}`;
-    return `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][b.getUTCMonth()]}${durationDays > 365 ? " '" + String(b.getUTCFullYear()).slice(2) : ''}`;
+      return `${b.getUTCDate()} ${months[b.getUTCMonth()]} ${b.getUTCFullYear()}`;
+    return `${months[b.getUTCMonth()]} ${b.getUTCFullYear()}`;
   };
 
   if (isDaily) {
@@ -2745,7 +2824,7 @@ const getReport = async (query: PosReportQuery) => {
     const ey = bdEnd.getUTCFullYear(),
       em = bdEnd.getUTCMonth();
     while (y < ey || (y === ey && m <= em)) {
-      const lbl = `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m]}${durationDays > 365 ? " '" + String(y).slice(2) : ''}`;
+      const lbl = `${['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][m]} ${y}`;
       timeline.set(lbl, { revenue: 0, orders: 0 });
       m++;
       if (m > 11) {
@@ -2879,6 +2958,11 @@ const getReport = async (query: PosReportQuery) => {
           paymentStatus: o.paymentStatus,
           storeName: o.store?.name || 'N/A',
           createdAt: o.createdAt,
+          payments: o.globalPayments.map((p) => ({
+            method: p.paymentMethod,
+            amount: p.amount,
+            bankName: p.bank?.bankName || null,
+          })),
           items: o.posOrderItems.map((item) => ({
             productName: item.product?.name || 'Deleted Product',
             barcode: item.product?.barcodeId || '-',
