@@ -35,6 +35,7 @@ import { supplierReturnRoutes } from '../modules/supplier-return/supplier-return
 import { customerReturnRoutes } from '../modules/customer-return/customer-return.route.js';
 import { stockAdjustmentRoutes } from '../modules/stock-adjustment/stock-adjustment.route.js';
 import { damageRoutes } from '../modules/damage/damage.route.js';
+import { posCustomerRoutes } from '../modules/pos-customer/pos-customer.route.js';
 const router = Router();
 
 router.use('/products', productRoutes);
@@ -72,8 +73,8 @@ router.use('/supplier-returns', supplierReturnRoutes);
 router.use('/customer-returns', customerReturnRoutes);
 router.use('/stock-adjustments', stockAdjustmentRoutes);
 router.use('/damages', damageRoutes);
+router.use('/pos-customers', posCustomerRoutes);
 
 router.use('/dashboard', dashboardRoutes);
 
 export const apiRoutes = router;
-

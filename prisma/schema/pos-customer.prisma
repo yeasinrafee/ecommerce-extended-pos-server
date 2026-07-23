@@ -1,0 +1,11 @@
+model PosCustomer {
+    id          String   @id @default(uuid())
+    name        String
+    phone       String   @unique
+    isDeleted   Boolean  @default(false)
+    posOrderIds String[] @default([])
+    createdAt   DateTime @default(now())
+    updatedAt   DateTime @updatedAt
+
+    posOrders PosOrder[]
+}
